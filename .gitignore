@@ -1,0 +1,22 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local settings and secrets
+.env
+.env.*
+*.local
+.claude/settings.local.json
+
+# Build output and logs
+build/
+dist/
+out/
+*.log
