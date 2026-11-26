@@ -1,0 +1,37 @@
+[package]
+name = "homekvm"
+version = "0.1.0"
+edition = "2021"
+description = "Share one keyboard and mouse, the clipboard and files across your home PCs"
+publish = false
+
+[[bin]]
+name = "HomeKVM"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.29"
+raw-window-handle = "0.6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tray-icon = "0.19"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Controls",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
