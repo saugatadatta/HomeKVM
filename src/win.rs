@@ -25,15 +25,38 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// True if this is the only running copy for this user session.
+/// The "only one HomeKVM" lock this copy holds (0 = none).
+static INSTANCE_LOCK: AtomicIsize = AtomicIsize::new(0);
+
+/// True if this is the only running copy for this user session. Safe to call again
+/// while waiting for another copy to exit.
 pub fn acquire_single_instance() -> bool {
     let name = wide(&format!("{INSTANCE_MUTEX}{}", crate::profile::suffix()));
-    // The handle stays open for the life of the process on purpose.
     let mutex = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if mutex.is_null() {
         return true;
     }
-    unsafe { GetLastError() != ERROR_ALREADY_EXISTS }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // Another copy has the lock. Close our handle to it, or it would keep the lock
+        // alive even after that copy exits, and a retry could never succeed.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(mutex);
+        }
+        return false;
+    }
+    // Ours: kept open until this copy exits (or hands over to an update).
+    INSTANCE_LOCK.store(mutex as isize, Ordering::SeqCst);
+    true
+}
+
+/// Let go of the lock before starting a newer version, so it can take over at once.
+pub fn release_single_instance() {
+    let lock = INSTANCE_LOCK.swap(0, Ordering::SeqCst);
+    if lock != 0 {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(lock as HANDLE);
+        }
+    }
 }
 
 /// Ask the copy that is already running to open its window.

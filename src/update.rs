@@ -171,7 +171,14 @@ fn install(new_exe: &Path) -> Result<(), String> {
         return Err(format!("can't write the new version ({e})"));
     }
     let _ = std::fs::remove_file(new_exe);
-    std::process::Command::new(&me).arg(AFTER_UPDATE).spawn().map_err(|e| e.to_string())?;
+    // Hand over: release the single-instance lock first, so the new version doesn't have
+    // to wait for this one to finish exiting.
+    crate::win::release_single_instance();
+    if let Err(e) = std::process::Command::new(&me).arg(AFTER_UPDATE).spawn() {
+        // Couldn't start it: keep running this version rather than leave nothing running.
+        crate::win::acquire_single_instance();
+        return Err(e.to_string());
+    }
     crate::tray::quit();
     Ok(())
 }

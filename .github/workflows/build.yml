@@ -37,6 +37,13 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Check the exe's manifest
+        shell: pwsh
+        run: |
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("target/release/HomeKVM.exe"))
+          if (-not $text.Contains('asInvoker')) { throw "The application manifest is missing from HomeKVM.exe" }
+          "Application manifest embedded."
+
       - name: Upload HomeKVM.exe
         id: upload
         uses: actions/upload-artifact@v7
