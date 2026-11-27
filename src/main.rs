@@ -8,8 +8,15 @@ mod autostart;
 mod config;
 mod devices;
 mod icon;
+mod icon_art;
+mod identity;
 mod menu_icons;
+mod net;
+mod peers;
+mod profile;
+mod proto;
 mod state;
+mod tls;
 mod tray;
 mod ui;
 mod win;
@@ -31,12 +38,23 @@ fn main() {
     }
 
     let shared = Arc::new(state::Shared::default());
+    shared.set_layout(&cfg.layout);
     let tray = tray::spawn(shared.clone());
     win::listen_for_show_requests();
 
+    // Network changes redraw the window and the tray icon.
+    let on_change: Arc<dyn Fn() + Send + Sync> = {
+        let tray = tray.clone();
+        Arc::new(move || {
+            win::request_repaint();
+            tray.refresh();
+        })
+    };
+    let net = net::start(shared.clone(), cfg.device_name.clone(), on_change);
+
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("HomeKVM")
+            .with_title(profile::title())
             // Fixed width, no resizing, no maximize. The height fits the content (ui.rs).
             .with_inner_size([WINDOW_WIDTH, 720.0])
             .with_resizable(false)
@@ -52,7 +70,7 @@ fn main() {
         options,
         Box::new(move |cc| {
             win::register_main_window(cc);
-            Ok(Box::new(ui::App::new(cc, cfg, shared, tray)))
+            Ok(Box::new(ui::App::new(cc, cfg, shared, tray, net)))
         }),
     );
     if let Err(e) = result {

@@ -29,7 +29,8 @@ controlled by another PC, so you choose the server by choosing where you sit.
   The touching edge is where the mouse crosses over.
 - Device list: connected, found nearby (Pair), and paired but offline.
 - Pairing: both screens show the same 6-digit code, and you confirm it on each (like Bluetooth).
-- Settings: clipboard text, images, files (with a size limit), start at login, edge delay.
+- Settings: clipboard text, images, files, start at login, edge delay. Advanced (collapsed):
+  the size up to which copied files paste as real files.
 - Tray first: the app always starts hidden in the tray, both at sign-in and when launched by hand.
   The window opens only from the tray icon (click it or choose Open). Closing or minimizing the
   window sends it back to the tray. Only Quit in the tray menu exits.
@@ -65,19 +66,52 @@ controlled by another PC, so you choose the server by choosing where you sit.
 2. The other device moves its own cursor with `SendInput`, starting at the matching edge
    and at the same height (as a percentage).
 3. When the cursor reaches the edge on the other side that faces back, control returns.
-4. Clipboard sync happens at the moment control switches, so you paste what you last copied.
+4. When the mouse arrives on a PC, that PC's clipboard already holds the latest copy
+   (see "Shared clipboard").
 
-## File copy via clipboard
-Copy files in Explorer on PC A, move to PC B, then paste. Version 1 copies the files to
-`Downloads\HomeKVM` on B and puts them on B's clipboard, so a paste in Explorer drops them
-where you want. Large or many files show progress in the window. The size limit is a setting.
+## Shared clipboard: one clipboard across all PCs, last copy wins
+It behaves like one clipboard that every paired PC shares. Text, images and files all work
+the same way: copy on one PC, move the mouse to another, and paste with Ctrl+V or right-click,
+Paste, in any app.
+
+- **Last copy wins.** Whichever PC you copy on (Ctrl+C, Copy, a screenshot to the clipboard)
+  becomes the clipboard's owner. Its copy replaces the clipboard on every other paired PC.
+- **Works both ways.** Copy on A, go to B, and B has A's copy. Copy on B, and A's old copy is
+  replaced. When you go back to A, it has B's copy until you copy something new on A.
+- **Text and images** (including screenshots) are small, so they go to the other PCs right
+  away, and the clipboard there is updated before you arrive.
+- **Files and folders** copied in Explorer: nothing is sent when you copy. The other PCs only
+  get the list (names and sizes), which sits on their clipboard. File data moves **only when
+  you paste**. How it's pasted depends on the total size of what you copied:
+  - **Small copies (under 50 MB in total by default): real files, made at paste time.** The clipboard offers ordinary
+    file paths (`CF_HDROP`), rendered on request. When you paste, HomeKVM fetches the files
+    from the source PC into a hidden, private cache folder
+    (`%LOCALAPPDATA%\HomeKVM\paste-cache`, readable only by your account) and hands over those
+    paths. This works in every app: Explorer, the desktop, Office, and also browsers (Chrome,
+    Edge uploads) and Electron chat apps (Teams, Slack, WhatsApp) that need a real file path.
+    At this size it feels instant.
+  - **Bigger copies: virtual files, streamed straight into place.** The clipboard offers Windows
+    "virtual files" (`CFSTR_FILEDESCRIPTOR` + `CFSTR_FILECONTENTS`, the way Remote Desktop pastes
+    files). When you paste in Explorer, on the desktop or in Office, the data streams from the
+    source PC directly into the destination, with Explorer's own progress and Cancel, and nothing
+    stored in between. Apps that need a real file path can't take these; paste into a folder
+    first.
+  - One copy uses one form, chosen by its total size, so every app sees the same thing.
+  - The size limit is a slider under Settings, Advanced: 10 to 200 MB in 10 MB steps, 50 MB by
+    default. There's no other size limit, since files only move when you paste.
+  - The cache is emptied when the clipboard changes, after a while, and at the next sign-in.
+  - The PC you copied on must still be on and connected when you paste.
+- **Never sent:** content that password managers mark as private (Windows'
+  "exclude from clipboard history" flag).
+- **No loops:** a PC that receives a copy and puts it on its own clipboard doesn't send it back.
+- Each kind (text, images, files) has its own switch in Settings.
 
 ## Phases
 1. Skeleton: window, tray, config, start at login (no input or network yet).
 2. Pairing and an encrypted connection between two PCs, plus the device list.
 3. Mouse and keyboard sharing on Windows, with left/right edges and the return hotkey.
-4. Clipboard: text and images.
-5. Files through the clipboard, with progress.
+4. Shared clipboard: text and images (last copy wins, both ways).
+5. Files and folders through the same shared clipboard, with progress.
 6. macOS and Linux.
 7. Installer or portable zip, plus code signing.
 

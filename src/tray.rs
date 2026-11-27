@@ -16,6 +16,7 @@
 //! main window is hidden.
 
 use crate::menu_icons::{self, Glyph};
+use crate::config::Side;
 use crate::state::{Shared, Status};
 use crate::{icon, win};
 use std::cell::{Cell, RefCell};
@@ -47,6 +48,7 @@ const CMD_HOME: u32 = 3;
 const CMD_QUIT: u32 = 4;
 
 /// Lets the window ask the tray to redraw after the status changes.
+#[derive(Clone)]
 pub struct TrayHandle {
     tx: Sender<()>,
     thread_id: u32,
@@ -82,7 +84,7 @@ fn run(shared: Arc<Shared>, rx: Receiver<()>, id_tx: Sender<u32>) {
     let status = shared.status();
     let tray = TrayIconBuilder::new()
         .with_icon(tray_icon_for(status))
-        .with_tooltip(tooltip(status))
+        .with_tooltip(tooltip(&shared))
         .build()
         .expect("create tray icon");
 
@@ -109,7 +111,7 @@ fn run(shared: Arc<Shared>, rx: Receiver<()>, id_tx: Sender<u32>) {
                 TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }
                 | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => win::show_main_window(),
                 TrayIconEvent::Click { button: MouseButton::Right, button_state: MouseButtonState::Up, .. } => {
-                    match unsafe { show_menu(owner, shared.status()) } {
+                    match unsafe { show_menu(owner, &shared) } {
                         CMD_OPEN => win::show_main_window(),
                         CMD_PAUSE => {
                             shared.set_paused(!shared.paused());
@@ -135,13 +137,23 @@ fn run(shared: Arc<Shared>, rx: Receiver<()>, id_tx: Sender<u32>) {
         if changed {
             let status = shared.status();
             let _ = tray.set_icon(Some(tray_icon_for(status)));
-            let _ = tray.set_tooltip(Some(tooltip(status)));
+            let _ = tray.set_tooltip(Some(tooltip(&shared)));
         }
     }
 }
 
-fn tooltip(status: Status) -> String {
-    format!("HomeKVM — {}", status.title().to_lowercase())
+/// "HomeKVM — connected to Work laptop, Mini PC" or "HomeKVM — not connected".
+fn tooltip(shared: &Shared) -> String {
+    let status = shared.status();
+    let names: Vec<String> =
+        shared.net().peers.into_iter().filter(|p| p.paired && p.connected).map(|p| p.name).collect();
+    let text = if status == Status::Connected && !names.is_empty() {
+        format!("HomeKVM — connected to {}", names.join(", "))
+    } else {
+        format!("HomeKVM — {}", status.title().to_lowercase())
+    };
+    // Windows cuts tray tooltips at 127 characters.
+    text.chars().take(120).collect()
 }
 
 fn tray_icon_for(status: Status) -> Icon {
@@ -155,8 +167,7 @@ enum Row {
     Status(String),
     Separator,
     Action { glyph: Glyph, text: &'static str, shortcut: &'static str },
-    /// A paired PC with its status dot and side (used once pairing exists).
-    #[allow(dead_code)]
+    /// A paired PC with its status dot and side.
     Peer { dot: [u8; 3], name: String, side: String },
 }
 
@@ -225,11 +236,40 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 /// Show the menu at the cursor and return the chosen command (0 if dismissed).
-unsafe fn show_menu(owner: HWND, status: Status) -> u32 {
+unsafe fn show_menu(owner: HWND, shared: &Shared) -> u32 {
+    let status = shared.status();
     let paused = status == Status::Paused;
-    let rows: Vec<(Row, u32)> = vec![
+
+    // Paired PCs, each with its dot and where it sits. Clicking one opens the window.
+    let layout = shared.layout();
+    let mut paired: Vec<_> = shared.net().peers.into_iter().filter(|p| p.paired).collect();
+    paired.sort_by_key(|p| (!p.connected, p.name.to_lowercase()));
+    let connected = paired.iter().filter(|p| p.connected).count();
+    let detail = if status == Status::Connected {
+        format!("{connected} PC{} linked, mouse is here", if connected == 1 { "" } else { "s" })
+    } else {
+        status.detail().to_string()
+    };
+    let peer_rows: Vec<(Row, u32)> = paired
+        .into_iter()
+        .map(|p| {
+            let side = match layout.side_of(&p.id) {
+                Side::Left => "left",
+                Side::Right => "right",
+                Side::NotPlaced => "not placed",
+            };
+            let (dot, side) = if p.connected {
+                (Status::Connected.rgb(), side.to_string())
+            } else {
+                (Status::NotConnected.rgb(), "offline".to_string())
+            };
+            (Row::Peer { dot, name: p.name, side }, CMD_OPEN)
+        })
+        .collect();
+
+    let mut rows: Vec<(Row, u32)> = vec![
         (Row::Header, CMD_OPEN),
-        (Row::Status(format!("{} · {}", status.title(), status.detail())), 0),
+        (Row::Status(format!("{} · {}", status.title(), detail)), 0),
         (Row::Separator, 0),
         (Row::Action { glyph: Glyph::Open, text: "Open HomeKVM", shortcut: "" }, CMD_OPEN),
         (
@@ -242,9 +282,12 @@ unsafe fn show_menu(owner: HWND, status: Status) -> u32 {
         ),
         (Row::Action { glyph: Glyph::Home, text: "Bring mouse back here", shortcut: "Ctrl+Alt+Home" }, CMD_HOME),
         (Row::Separator, 0),
-        // Paired PCs go here, then another separator (phase 2).
-        (Row::Action { glyph: Glyph::Power, text: "Quit", shortcut: "" }, CMD_QUIT),
     ];
+    if !peer_rows.is_empty() {
+        rows.extend(peer_rows);
+        rows.push((Row::Separator, 0));
+    }
+    rows.push((Row::Action { glyph: Glyph::Power, text: "Quit", shortcut: "" }, CMD_QUIT));
 
     DPI.set(GetDpiForWindow(owner).max(96) as i32);
     let theme = if menu_icons::dark_mode() { DARK } else { LIGHT };

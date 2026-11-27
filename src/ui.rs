@@ -1,8 +1,9 @@
 //! The main window. Closing or minimizing it sends it back to the tray.
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, Side};
 use crate::devices::{self, Attached, Link};
-use crate::state::{Shared, Status};
+use crate::net::{Cmd, NetHandle};
+use crate::state::{NetView, PairingView, PeerView, Shared, Status};
 use crate::{autostart, tray::TrayHandle};
 use eframe::egui::{
     self, Align, Color32, Context, Frame, Layout, Margin, Pos2, Rect, Response, RichText, Rounding, Sense, Shape,
@@ -16,6 +17,8 @@ const RESCAN: Duration = Duration::from_secs(3);
 const VISIBLE: usize = 3;
 /// Space around the window's content.
 const MARGIN: f32 = 16.0;
+/// Height of buttons and dropdowns that sit side by side.
+const CONTROL_HEIGHT: f32 = 26.0;
 
 pub struct App {
     cfg: Config,
@@ -29,17 +32,29 @@ pub struct App {
     row_start: Option<usize>,
     /// Frames spent fitting the height while the window opens invisibly.
     fit_frames: u32,
+    net: NetHandle,
+    /// The network state for this frame.
+    view: NetView,
+    /// "Forget" was clicked once for this PC; waiting for the second click.
+    confirm_forget: Option<String>,
 }
 
 /// One screen in the layout row.
 enum Slot {
     Me(String),
-    Peer(String, &'static str),
+    /// Name, side, online.
+    Peer(String, &'static str, bool),
     Empty(&'static str),
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, cfg: Config, shared: Arc<Shared>, tray: TrayHandle) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        cfg: Config,
+        shared: Arc<Shared>,
+        tray: TrayHandle,
+        net: NetHandle,
+    ) -> Self {
         // Same spacing in both themes, and brighter text than egui's default gray.
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
             cc.egui_ctx.style_mut_of(theme, |style| {
@@ -61,6 +76,9 @@ impl App {
             error: None,
             row_start: None,
             fit_frames: 0,
+            net,
+            view: NetView::default(),
+            confirm_forget: None,
         }
     }
 
@@ -98,26 +116,30 @@ impl App {
             ui.add_space(4.0);
 
             // The whole row: PCs on the left (outermost first), this PC, PCs on the right.
-            let demo;
-            let layout = if demo_layout() {
-                // Dev-only preview of a long row (HOMEKVM_DEMO=1); never saved.
-                demo = config::Layout {
-                    left: vec!["Work laptop".into(), "Old MacBook".into()],
-                    right: vec!["Mini PC".into(), "Media PC".into()],
-                };
-                &demo
-            } else {
-                &self.cfg.layout
+            // Only paired PCs are shown; the layout stores their IDs.
+            let side = |ids: &[String], label: &'static str| -> Vec<Slot> {
+                if demo_layout() {
+                    // Dev-only preview of a long row (HOMEKVM_DEMO=1); never saved.
+                    let names: &[&str] = if label == "left" { &["Work laptop", "Old MacBook"] } else { &["Mini PC", "Media PC"] };
+                    return names.iter().map(|n| Slot::Peer(n.to_string(), label, true)).collect();
+                }
+                ids.iter()
+                    .filter_map(|id| self.view.peer(id).filter(|p| p.paired))
+                    .map(|p| Slot::Peer(p.name.clone(), label, p.connected))
+                    .collect()
             };
+            let (left, right) = (side(&self.cfg.layout.left, "left"), side(&self.cfg.layout.right, "right"));
+
             let mut row: Vec<Slot> = Vec::new();
-            if layout.left.is_empty() {
+            if left.is_empty() {
                 row.push(Slot::Empty("left"));
             }
-            row.extend(layout.left.iter().rev().map(|n| Slot::Peer(n.clone(), "left")));
+            row.extend(left.into_iter().rev());
             let me = row.len();
             row.push(Slot::Me(self.cfg.device_name.clone()));
-            row.extend(layout.right.iter().map(|n| Slot::Peer(n.clone(), "right")));
-            if layout.right.is_empty() {
+            let right_empty = right.is_empty();
+            row.extend(right);
+            if right_empty {
                 row.push(Slot::Empty("right"));
             }
 
@@ -172,14 +194,128 @@ impl App {
     }
 
     fn devices_section(&mut self, ui: &mut Ui) {
+        let view = self.view.clone();
         section(ui, "Other PCs", |ui| {
-            ui.label("No other PCs yet.");
-            ui.label(
-                RichText::new(
-                    "Install HomeKVM on another PC on this network. Pairing with a 6-digit code comes in the next version.",
-                )
-                .color(muted(ui)),
-            );
+            if let Some(p) = &view.pairing {
+                self.pairing_box(ui, p);
+            } else if let Some(id) = &view.connecting {
+                let name = view.peer(id).map(|p| p.name.as_str()).unwrap_or("the other PC");
+                ui.label(format!("Connecting to {name}…"));
+            }
+            if let Some(notice) = &view.notice {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(notice).color(warning(ui)));
+                    if ui.small_button("Dismiss").clicked() {
+                        self.net.send(Cmd::ClearNotice);
+                    }
+                });
+            }
+
+            // Trusted PCs first, then PCs found on the network.
+            let mut peers: Vec<&PeerView> = view.peers.iter().collect();
+            peers.sort_by_key(|p| (!p.paired, !p.connected, p.name.to_lowercase()));
+            if peers.is_empty() {
+                ui.label("No other PCs found yet.");
+                ui.label(
+                    RichText::new("Open HomeKVM on another PC on this network. It shows up here on its own.")
+                        .color(muted(ui)),
+                );
+            }
+            let busy = view.pairing.is_some() || view.connecting.is_some();
+            for (i, p) in peers.into_iter().enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                self.peer_row(ui, p, busy);
+            }
+        });
+    }
+
+    fn pairing_box(&mut self, ui: &mut Ui, p: &PairingView) {
+        Frame::none()
+            .fill(ui.visuals().selection.bg_fill.gamma_multiply(0.22))
+            .rounding(Rounding::same(8.0))
+            .inner_margin(Margin::same(12.0))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let title = if p.incoming {
+                    format!("{} wants to pair with this PC", p.name)
+                } else {
+                    format!("Pairing with {}", p.name)
+                };
+                ui.label(RichText::new(title).strong());
+                ui.label(RichText::new("Check that both PCs show the same code.").size(12.0).color(muted(ui)));
+                ui.label(RichText::new(&p.code).size(30.0).monospace().strong());
+                ui.horizontal(|ui| {
+                    if p.confirmed {
+                        ui.label(RichText::new(format!("Waiting for {} to confirm…", p.name)).color(muted(ui)));
+                    } else if ui.button("Codes match — trust").clicked() {
+                        self.net.send(Cmd::Confirm(p.id.clone(), true));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.net.send(Cmd::Confirm(p.id.clone(), false));
+                    }
+                });
+            });
+        ui.add_space(4.0);
+    }
+
+    fn peer_row(&mut self, ui: &mut Ui, p: &PeerView, busy: bool) {
+        let (dot, status) = match (p.paired, p.connected) {
+            (true, true) => (Status::Connected.rgb(), "Connected".to_string()),
+            (true, false) if p.found => (Status::NotConnected.rgb(), "Paired · reconnecting…".to_string()),
+            (true, false) => (Status::NotConnected.rgb(), "Paired · offline".to_string()),
+            (false, _) => (Status::Paused.rgb(), "Found on the network".to_string()),
+        };
+        let status = match &p.addr {
+            Some(a) => format!("{status} · {a}"),
+            None => status,
+        };
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+            ui.painter().circle_filled(rect.center(), 4.5, Color32::from_rgb(dot[0], dot[1], dot[2]));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Every control in the row is the same height.
+                ui.spacing_mut().interact_size.y = CONTROL_HEIGHT;
+                let size = Vec2::new(72.0, CONTROL_HEIGHT);
+                if !p.paired {
+                    if ui.add_enabled(!busy, egui::Button::new("Pair").min_size(size)).clicked() {
+                        self.net.send(Cmd::Pair(p.id.clone()));
+                    }
+                } else if self.confirm_forget.as_deref() == Some(p.id.as_str()) {
+                    // Second step: a solid red Forget next to a plain Keep.
+                    if ui.add(danger_button(ui, "Forget", true).min_size(size)).clicked() {
+                        self.net.send(Cmd::Forget(p.id.clone()));
+                        self.cfg.layout.place(&p.id, Side::NotPlaced);
+                        self.confirm_forget = None;
+                    }
+                    if ui.add(egui::Button::new("Keep").min_size(size)).clicked() {
+                        self.confirm_forget = None;
+                    }
+                } else {
+                    if ui.add(danger_button(ui, "Forget", false).min_size(size)).clicked() {
+                        self.confirm_forget = Some(p.id.clone());
+                    }
+                    let mut side = self.cfg.layout.side_of(&p.id);
+                    let before = side;
+                    egui::ComboBox::from_id_salt(("side", &p.id))
+                        .width(96.0)
+                        .selected_text(side.label())
+                        .show_ui(ui, |ui| {
+                            for s in [Side::Left, Side::Right, Side::NotPlaced] {
+                                ui.selectable_value(&mut side, s, s.label());
+                            }
+                        });
+                    if side != before {
+                        self.cfg.layout.place(&p.id, side);
+                        self.row_start = None;
+                    }
+                }
+                ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                    ui.label(&p.name);
+                    ui.label(RichText::new(status).size(12.0).color(muted(ui)));
+                });
+            });
         });
     }
 
@@ -188,8 +324,7 @@ impl App {
         section(ui, "Settings", |ui| {
             setting_row(ui, "Share clipboard text", "Copy here, paste there", &mut c.clipboard_text);
             setting_row(ui, "Share images", "Screenshots and copied pictures", &mut c.clipboard_images);
-            let files = format!("Up to {} GB, saved to Downloads\\HomeKVM", c.max_file_mb / 1024);
-            setting_row(ui, "Send copied files", &files, &mut c.send_files);
+            setting_row(ui, "Send copied files", "Copy here, paste there. Files move only when you paste.", &mut c.send_files);
             let login = if autostart::APPLIES {
                 "Starts in the tray, no admin rights needed"
             } else {
@@ -197,6 +332,26 @@ impl App {
             };
             setting_row(ui, "Start when I sign in", login, &mut c.start_at_login);
             setting_row(ui, "Pause at the screen edge", "Wait 0.2 s before switching PCs", &mut c.edge_delay);
+
+            // Closed by default; opening it grows the window to fit.
+            egui::CollapsingHeader::new("Advanced").default_open(false).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Paste as real files up to");
+                    ui.add(
+                        egui::Slider::new(&mut c.real_file_limit_mb, 10..=200)
+                            .step_by(10.0)
+                            .suffix(" MB"),
+                    );
+                });
+                ui.label(
+                    RichText::new(
+                        "Smaller copies paste as real files in every app, including browsers and chat apps. \
+                         Bigger copies stream straight into folders.",
+                    )
+                    .size(12.0)
+                    .color(muted(ui)),
+                );
+            });
         });
     }
 
@@ -210,6 +365,13 @@ impl App {
                 errors.push(format!("Couldn't change start at sign-in: {e}"));
             }
         }
+        if self.cfg.device_name != self.saved.device_name {
+            self.net.send(Cmd::Rename(self.cfg.device_name.clone()));
+        }
+        if self.cfg.layout != self.saved.layout {
+            self.shared.set_layout(&self.cfg.layout);
+            self.tray.refresh();
+        }
         if let Err(e) = config::save(&self.cfg) {
             errors.push(format!("Couldn't save settings: {e}"));
         }
@@ -221,6 +383,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.hide_instead_of_close(ctx);
+        self.view = self.shared.net();
 
         if self.last_scan.elapsed() >= RESCAN {
             self.attached = devices::scan();
@@ -246,8 +409,9 @@ impl eframe::App for App {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(format!(
-                        "Version {} · pairing, sharing and clipboard arrive in the next versions",
-                        env!("CARGO_PKG_VERSION")
+                        "Version {} · encrypted, paired PCs only · this PC's ID {}",
+                        env!("CARGO_PKG_VERSION"),
+                        self.view.my_id
                     ))
                     .size(12.0)
                     .color(muted(ui)),
@@ -392,10 +556,10 @@ fn screen_slot(ui: &mut Ui, size: Vec2, slot: &Slot) {
     let accent = v.selection.bg_fill;
     let weak = muted(ui);
 
-    let (name, me, side) = match slot {
-        Slot::Me(n) => (Some(n.as_str()), true, ""),
-        Slot::Peer(n, side) => (Some(n.as_str()), false, *side),
-        Slot::Empty(side) => (None, false, *side),
+    let (name, me, side, online) = match slot {
+        Slot::Me(n) => (Some(n.as_str()), true, "", true),
+        Slot::Peer(n, side, online) => (Some(n.as_str()), false, *side, *online),
+        Slot::Empty(side) => (None, false, *side, false),
     };
     match name {
         Some(name) => {
@@ -411,7 +575,11 @@ fn screen_slot(ui: &mut Ui, size: Vec2, slot: &Slot) {
                 egui::FontId::proportional(font_size),
                 v.strong_text_color(),
             );
-            let sub = if me { "this PC".to_string() } else { format!("{side} side") };
+            let sub = match (me, online) {
+                (true, _) => "this PC".to_string(),
+                (false, true) => format!("{side} side"),
+                (false, false) => format!("{side} · offline"),
+            };
             painter.text(
                 Pos2::new(rect.center().x, rect.top() + 67.0),
                 egui::Align2::CENTER_CENTER,
@@ -477,6 +645,36 @@ fn fit_text(ui: &Ui, s: &str, max_width: f32) -> (String, f32) {
         }
     }
     (s.to_owned(), 11.0)
+}
+
+/// A red button: tinted, or solid when `solid` (for the final confirmation).
+fn danger_button(ui: &Ui, text: &str, solid: bool) -> egui::Button<'static> {
+    let red = danger(ui);
+    if solid {
+        egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
+            .fill(Color32::from_rgb(196, 43, 28))
+            .stroke(Stroke::NONE)
+    } else {
+        egui::Button::new(RichText::new(text).color(red))
+            .fill(red.gamma_multiply(0.14))
+            .stroke(Stroke::new(1.0_f32, red.gamma_multiply(0.55)))
+    }
+}
+
+fn warning(ui: &Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::from_rgb(232, 180, 80)
+    } else {
+        Color32::from_rgb(150, 95, 10)
+    }
+}
+
+fn danger(ui: &Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::from_rgb(240, 110, 105)
+    } else {
+        Color32::from_rgb(190, 40, 35)
+    }
 }
 
 /// Secondary text: clearly readable, just quieter than the main text.

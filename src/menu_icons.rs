@@ -11,8 +11,7 @@ pub enum Glyph {
     Resume,
     Home,
     Power,
-    /// Status dot for each paired PC in the menu (used once pairing exists).
-    #[allow(dead_code)]
+    /// Status dot for each paired PC in the menu.
     Dot([u8; 3]),
 }
 

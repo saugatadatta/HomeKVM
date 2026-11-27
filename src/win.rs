@@ -27,7 +27,7 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// True if this is the only running copy for this user session.
 pub fn acquire_single_instance() -> bool {
-    let name = wide(INSTANCE_MUTEX);
+    let name = wide(&format!("{INSTANCE_MUTEX}{}", crate::profile::suffix()));
     // The handle stays open for the life of the process on purpose.
     let mutex = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if mutex.is_null() {
@@ -38,7 +38,7 @@ pub fn acquire_single_instance() -> bool {
 
 /// Ask the copy that is already running to open its window.
 pub fn signal_running_instance() {
-    let name = wide(SHOW_EVENT);
+    let name = wide(&format!("{SHOW_EVENT}{}", crate::profile::suffix()));
     unsafe {
         AllowSetForegroundWindow(ASFW_ANY);
         let event = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
@@ -51,7 +51,7 @@ pub fn signal_running_instance() {
 
 /// Open the window whenever another copy of HomeKVM is started.
 pub fn listen_for_show_requests() {
-    let name = wide(SHOW_EVENT);
+    let name = wide(&format!("{SHOW_EVENT}{}", crate::profile::suffix()));
     let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
     if event.is_null() {
         return;

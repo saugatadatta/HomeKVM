@@ -1,8 +1,10 @@
+use crate::config::Layout;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// What the tray dot and the status pill show.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(dead_code)] // Connected, Away and Attention arrive with pairing (phase 2).
+#[allow(dead_code)] // Away and Attention arrive with mouse sharing (phase 3).
 pub enum Status {
     /// At least one paired PC is connected; the mouse is here.
     Connected,
@@ -48,13 +50,81 @@ impl Status {
     }
 }
 
-/// State shared by the window and the tray thread.
+/// Another PC as the window and tray show it.
+#[derive(Clone, Debug, Default)]
+pub struct PeerView {
+    pub id: String,
+    pub name: String,
+    /// Trusted (paired) PC.
+    pub paired: bool,
+    /// Connected right now.
+    pub connected: bool,
+    /// Seen on the local network.
+    pub found: bool,
+    pub addr: Option<String>,
+}
+
+/// A pairing waiting for the user to compare codes.
+#[derive(Clone, Debug)]
+pub struct PairingView {
+    pub id: String,
+    pub name: String,
+    /// "482 913"
+    pub code: String,
+    /// The other PC asked.
+    pub incoming: bool,
+    /// This PC already confirmed; waiting for the other one.
+    pub confirmed: bool,
+}
+
+/// What the network side reports.
+#[derive(Clone, Debug, Default)]
+pub struct NetView {
+    /// This PC's ID, shortened for display.
+    pub my_id: String,
+    pub peers: Vec<PeerView>,
+    pub pairing: Option<PairingView>,
+    /// Connecting to this PC to pair with it.
+    pub connecting: Option<String>,
+    /// Something to tell the user (pairing declined, PC unreachable, ...).
+    pub notice: Option<String>,
+}
+
+impl NetView {
+    pub fn peer(&self, id: &str) -> Option<&PeerView> {
+        self.peers.iter().find(|p| p.id == id)
+    }
+}
+
+/// State shared by the window, the tray thread and the network thread.
 #[derive(Default)]
 pub struct Shared {
     paused: AtomicBool,
+    net: Mutex<NetView>,
+    layout: Mutex<Layout>,
 }
 
 impl Shared {
+    pub fn net(&self) -> NetView {
+        self.net.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    pub fn set_net(&self, view: NetView) {
+        if let Ok(mut v) = self.net.lock() {
+            *v = view;
+        }
+    }
+
+    pub fn layout(&self) -> Layout {
+        self.layout.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    pub fn set_layout(&self, layout: &Layout) {
+        if let Ok(mut l) = self.layout.lock() {
+            *l = layout.clone();
+        }
+    }
+
     pub fn paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
     }
@@ -66,8 +136,9 @@ impl Shared {
     pub fn status(&self) -> Status {
         if self.paused() {
             Status::Paused
+        } else if self.net().peers.iter().any(|p| p.paired && p.connected) {
+            Status::Connected
         } else {
-            // Phase 1 has no network yet, so nothing can be connected.
             Status::NotConnected
         }
     }
