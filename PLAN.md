@@ -11,7 +11,9 @@ computers on your home network, share the clipboard, and copy files by copy and 
 ## Principles
 - Simple: one window, one list of devices, one row of screens. No server, no account, no cloud.
 - Runs as you, never as admin: no service and no driver. Start-at-login uses
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, and is off until the user turns it
+  on: a new app that registers itself at first start looks like malware persistence to
+  antivirus heuristics.
 - Secure by default: only devices you pair can connect. Everything is encrypted.
 - Fails safe: if a connection drops, the keyboard and mouse come straight back to the local PC.
   A hotkey (Ctrl+Alt+Home) always returns them too.

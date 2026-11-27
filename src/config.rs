@@ -84,7 +84,8 @@ impl Default for Config {
             clipboard_images: true,
             send_files: true,
             real_file_limit_mb: 50,
-            start_at_login: true,
+            // Off until the user turns it on (see load()).
+            start_at_login: false,
             edge_delay: false,
             layout: Layout::default(),
         }
@@ -96,10 +97,18 @@ fn path() -> Option<PathBuf> {
 }
 
 pub fn load() -> Config {
-    let mut cfg: Config = path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default();
+    let saved: Option<Config> =
+        path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| toml::from_str(&s).ok());
+    let mut cfg = match saved {
+        Some(cfg) => cfg,
+        None => Config {
+            // Nothing saved yet: start at sign-in stays off for a new install, so the first
+            // start never writes to the Run key. A PC that an older version (where it was
+            // on by default) already registered keeps starting at sign-in.
+            start_at_login: crate::autostart::is_registered(),
+            ..Config::default()
+        },
+    };
     cfg.real_file_limit_mb = (cfg.real_file_limit_mb / 10 * 10).clamp(10, 200);
     cfg
 }

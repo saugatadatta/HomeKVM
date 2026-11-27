@@ -374,7 +374,7 @@ impl App {
             setting_row(ui, "Share images", "Screenshots and copied pictures", &mut c.clipboard_images);
             setting_row(ui, "Send copied files", "Copy here, paste there. Files move only when you paste.", &mut c.send_files);
             let login = if autostart::APPLIES {
-                "Starts in the tray, no admin rights needed"
+                "Off until you turn it on. Starts in the tray, no admin rights needed"
             } else {
                 "Dev build: not applied on this PC"
             };

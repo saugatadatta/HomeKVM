@@ -10,6 +10,14 @@ const VALUE: &str = "HomeKVM";
 /// a dev build to start at sign-in.
 pub const APPLIES: bool = !cfg!(debug_assertions);
 
+/// HomeKVM is already registered to start at sign-in (by any version). Read-only.
+pub fn is_registered() -> bool {
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(RUN_KEY, KEY_READ)
+        .and_then(|run| run.get_value::<String, _>(VALUE))
+        .is_ok()
+}
+
 pub fn apply(enable: bool) -> Result<(), String> {
     if !APPLIES {
         return Ok(());

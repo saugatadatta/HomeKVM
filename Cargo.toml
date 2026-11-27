@@ -1,6 +1,6 @@
 [package]
 name = "homekvm"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Share one keyboard and mouse, the clipboard and files across your home PCs"
 license = "MIT"

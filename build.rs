@@ -1,4 +1,5 @@
-//! Gives HomeKVM.exe its icon and version details (seen in Explorer and file Properties).
+//! Gives HomeKVM.exe its manifest, icon and version details (seen in Explorer and file
+//! Properties).
 //! The icon is drawn by the same code the app uses, so they always match.
 
 use std::path::{Path, PathBuf};
@@ -21,8 +22,51 @@ fn main() {
     let parts: Vec<u16> = version.split('.').map(|p| p.parse().unwrap_or(0)).collect();
     let (a, b, c) = (parts[0], parts.get(1).copied().unwrap_or(0), parts.get(2).copied().unwrap_or(0));
 
+    // Application manifest: runs as the user (never asks for admin), declares Windows 10/11
+    // support, per-monitor DPI awareness, long paths and modern common controls.
+    let manifest = out.join("homekvm.manifest");
+    std::fs::write(
+        &manifest,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="HomeKVM" version="{a}.{b}.{c}.0" processorArchitecture="amd64"/>
+  <description>HomeKVM: one keyboard and mouse across your Windows PCs</description>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}}"/>
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+        processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#
+        ),
+    )
+    .expect("write manifest");
+
+    // Resource 1 of type 24 (RT_MANIFEST) is the manifest Windows reads for an exe.
     let rc = format!(
-        r#"1 ICON "{ico}"
+        r#"1 24 "{manifest}"
+1 ICON "{ico}"
 1 VERSIONINFO
 FILEVERSION {a},{b},{c},0
 PRODUCTVERSION {a},{b},{c},0
@@ -45,6 +89,7 @@ BEGIN
   END
 END
 "#,
+        manifest = forward_slashes(&manifest),
         ico = forward_slashes(&ico)
     );
     let rc_path = out.join("homekvm.rc");

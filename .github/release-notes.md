@@ -13,6 +13,8 @@ by [SignPath Foundation](https://signpath.org) (applied for). See the
 HomeKVM updates itself from these releases. After this version, new versions install
 automatically.
 
+To start HomeKVM with Windows, turn on **Start when I sign in** in its Settings.
+
 Windows may ask to allow HomeKVM through the firewall. Allow it on **private** networks so
 your PCs can find each other.
 

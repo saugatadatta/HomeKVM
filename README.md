@@ -42,7 +42,8 @@ Next: free code signing (see [SIGNING.md](SIGNING.md)).
 ## Download
 Get `HomeKVM.exe` from [Releases](https://github.com/saugatadatta/HomeKVM/releases/latest).
 It's a single file: run it on each PC. Every release is built from this repo by GitHub
-Actions.
+Actions. To start HomeKVM with Windows, turn on **Start when I sign in** in its Settings; it's
+off until you do.
 
 HomeKVM uses [SignPath Foundation](https://signpath.org) for free code signing (applied for;
 see the code signing policy below). Until then, releases aren't signed, so Windows SmartScreen
