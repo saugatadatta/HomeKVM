@@ -60,6 +60,9 @@ pub mod diag {
     /// Hook status: 0 off, 1 on, negative = the Windows error code when installing failed.
     pub static KEYBOARD_HOOK: AtomicI64 = AtomicI64::new(0);
     pub static MOUSE_HOOK: AtomicI64 = AtomicI64::new(0);
+    /// When control last moved to another PC, the window in front here ran as
+    /// administrator, so Windows kept its keys from HomeKVM.
+    pub static KEYS_BLOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static CAPTURED: AtomicU64 = AtomicU64::new(0);
     static SENT: AtomicU64 = AtomicU64::new(0);
     static RECEIVED: AtomicU64 = AtomicU64::new(0);
@@ -130,6 +133,13 @@ pub mod diag {
         if ignored > 0 {
             keys.push_str(&format!(" · ignored {ignored}"));
         }
+        if KEYS_BLOCKED.load(Relaxed) {
+            return (
+                Health::Failed,
+                "blocked: the window in front on this PC runs as administrator. Click another window here, then move the mouse over again"
+                    .into(),
+            );
+        }
         let health = if failed > 0 {
             Health::Failed
         } else if counts.iter().all(|&c| c == 0) {
@@ -157,12 +167,16 @@ mod real {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc::UnboundedSender;
-    use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{
+        AttachThreadInput, GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+        GetAsyncKeyState, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
         KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
         MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
         MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP,
@@ -170,15 +184,16 @@ mod real {
         VK_RCONTROL, VK_RMENU, VK_XBUTTON1, VK_XBUTTON2,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, CreateCursor, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetMessageW,
+        CallNextHookEx, CreateCursor, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
+        GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, SetForegroundWindow, WM_KEYUP, WM_SYSKEYUP,
         GetSystemMetrics, PeekMessageW, PostThreadMessageW, RegisterClassW, SetCursorPos, SetLayeredWindowAttributes,
         SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK,
         HWND_TOPMOST, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, LLMHF_INJECTED, LWA_ALPHA, MSG,
         MSLLHOOKSTRUCT, PM_NOREMOVE, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
-        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WH_KEYBOARD_LL,
+        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_SHOWWINDOW, SW_HIDE, WH_KEYBOARD_LL,
         WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
         WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_USER, WM_XBUTTONDOWN,
-        WM_XBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        WM_XBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_INSTALL: u32 = WM_APP + 1;
@@ -199,6 +214,8 @@ mod real {
     /// Another PC controls this one right now.
     static CONTROLLED: AtomicBool = AtomicBool::new(false);
     static EDGE_DELAY: AtomicBool = AtomicBool::new(false);
+    /// The window that had the keyboard before control moved away; it gets it back.
+    static PREVIOUS_FOREGROUND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     pub fn available() -> bool {
         true
@@ -361,18 +378,86 @@ mod real {
     }
 
     /// Park the cursor in the middle of the main screen, hidden, while input goes elsewhere.
+    /// Control moved to another PC: hide the cursor under our small window, and give that
+    /// window the keyboard. Windows doesn't show a hook the keys meant for some windows
+    /// (one running as administrator, for one), so with our own window in front every
+    /// key reaches the hook, or at least our window.
     unsafe fn park() {
         let (cx, cy) = (GetSystemMetrics(SM_CXSCREEN) / 2, GetSystemMetrics(SM_CYSCREEN) / 2);
         let overlay = HOOKS.with(|h| h.borrow().overlay) as HWND;
+        let front = GetForegroundWindow();
+        let blocked = !front.is_null() && front != overlay && runs_higher(front);
+        super::diag::KEYS_BLOCKED.store(blocked, SeqCst);
         if !overlay.is_null() {
-            SetWindowPos(overlay, HWND_TOPMOST, cx - 32, cy - 32, 64, 64, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            if front != overlay {
+                PREVIOUS_FOREGROUND.store(front as usize, SeqCst);
+            }
+            SetWindowPos(overlay, HWND_TOPMOST, cx - 32, cy - 32, 64, 64, SWP_SHOWWINDOW);
+            take_keyboard(overlay, front);
         }
         SetCursorPos(cx, cy);
+    }
+
+    /// Bring `hwnd` to the front with the keyboard focus. Windows lets a background app do
+    /// that while its thread shares input with the one in front (`AttachThreadInput`).
+    unsafe fn take_keyboard(hwnd: HWND, front: HWND) {
+        let me = GetCurrentThreadId();
+        let other = if front.is_null() { 0 } else { GetWindowThreadProcessId(front, std::ptr::null_mut()) };
+        let attached = other != 0 && other != me && AttachThreadInput(me, other, 1) != 0;
+        SetForegroundWindow(hwnd);
+        SetFocus(hwnd);
+        if attached {
+            AttachThreadInput(me, other, 0);
+        }
+    }
+
+    /// The window's program runs as administrator (or can't even be asked) while
+    /// HomeKVM doesn't: Windows then keeps that window's keys from HomeKVM.
+    unsafe fn runs_higher(hwnd: HWND) -> bool {
+        if elevated(GetCurrentProcess()) == Some(true) {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || pid == std::process::id() {
+            return false;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let result = elevated(process).unwrap_or(true);
+        CloseHandle(process);
+        result
+    }
+
+    /// Whether a process runs elevated; None if its token can't be read.
+    unsafe fn elevated(process: HANDLE) -> Option<bool> {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+            return None;
+        }
+        let mut info = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut info as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        );
+        CloseHandle(token);
+        (ok != 0).then_some(info.TokenIsElevated != 0)
     }
 
     unsafe fn unpark(side: usize, y: isize) {
         let overlay = HOOKS.with(|h| h.borrow().overlay) as HWND;
         if !overlay.is_null() {
+            // The window used before gets the keyboard back.
+            let previous = PREVIOUS_FOREGROUND.swap(0, SeqCst) as HWND;
+            if !previous.is_null() && GetForegroundWindow() == overlay {
+                take_keyboard(previous, overlay);
+            }
             ShowWindow(overlay, SW_HIDE);
         }
         if side != 0 {
@@ -399,7 +484,7 @@ mod real {
         let class: Vec<u16> = "HomeKVM.HiddenCursor\0".encode_utf16().collect();
         let wc = WNDCLASSW {
             style: 0,
-            lpfnWndProc: Some(DefWindowProcW),
+            lpfnWndProc: Some(overlay_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: module,
@@ -411,7 +496,7 @@ mod real {
         };
         RegisterClassW(&wc);
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             class.as_ptr(),
             class.as_ptr(),
             WS_POPUP,
@@ -428,6 +513,22 @@ mod real {
             SetLayeredWindowAttributes(hwnd, 0, 1, LWA_ALPHA);
         }
         hwnd
+    }
+
+    /// The small window under the parked cursor. While control is on another PC it has
+    /// the keyboard: the hook normally takes every key first, and any key it misses
+    /// arrives here and is sent on all the same.
+    unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let key = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP);
+        if key && CAPTURED.load(SeqCst) {
+            let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+            let sc = ((lparam >> 16) & 0xFF) as u16;
+            let ext = (lparam >> 24) & 1 == 1;
+            send(Local::Key { vk: wparam as u16, sc, ext, down });
+            super::diag::key_captured();
+            return 0;
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 
     unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
