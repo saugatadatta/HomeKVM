@@ -9,21 +9,40 @@ See [PLAN.md](PLAN.md) for the design and phases.
 ## Status
 - Phase 1: tray icon with a status dot, main window, settings, start at sign-in, and
   detection of the keyboards and mice attached to this PC.
-- Phase 2 (this version, 0.2.0): PCs find each other on the local network (mDNS), pair with
-  a 6-digit code, and stay connected over encrypted QUIC (TLS 1.3). Place paired PCs left or
-  right; Forget works both ways.
+- Phase 2: PCs find each other on the local network (mDNS), pair with a 6-digit code, and
+  stay connected over encrypted QUIC (TLS 1.3). Place paired PCs left or right; Forget works
+  both ways.
+- Phase 3: keyboard and mouse sharing. Move the mouse past a screen edge onto the PC placed
+  there, along a row of several PCs, and back. Ctrl+Alt+Home (or the tray menu) always brings
+  it back; a dropped connection releases everything; using a controlled PC's own mouse takes
+  it back. Not yet tested on real hardware.
+- Phase 4 (this version, 0.4.0): one shared clipboard for text and images (screenshots too),
+  last copy wins, both ways. Password-manager copies marked private are never sent.
 
-Mouse and keyboard sharing, the shared clipboard and file paste come in later phases.
-For development, `HOMEKVM_PROFILE=b` runs a second, separate copy on the same PC (debug builds only).
+Next: phase 5, files through the same shared clipboard.
+
+## Download
+Every push to `main` is built by GitHub Actions (Actions tab, latest "Build" run,
+Artifacts). That build includes keyboard and mouse sharing.
+
+Keyboard and mouse sharing uses global input hooks and input injection, which security
+software can mistake for a keylogger. Only run it on PCs where that's allowed. Don't run it
+on managed work PCs.
 
 ## Build (Windows)
-Needs Rust (GNU toolchain, `x86_64-pc-windows-gnu`) and MinGW-w64 binutils on `PATH`
-(`winget install BrechtSanders.WinLibs.POSIX.MSVCRT`). Rust's bundled `dlltool` can't
-build import libraries on its own.
+Needs Rust. With the GNU toolchain (`x86_64-pc-windows-gnu`), MinGW-w64 binutils must also be
+on `PATH` (`winget install BrechtSanders.WinLibs.POSIX.MSVCRT`), because Rust's bundled
+`dlltool` can't build import libraries on its own.
 ```powershell
 cargo build --release
+```
+Without keyboard and mouse sharing (no input hooks), for PCs where they aren't allowed:
+```powershell
+cargo build --release --no-default-features
 ```
 The program is `target\release\HomeKVM.exe`. It starts hidden in the tray; click the tray
 icon to open the window. Closing the window keeps it in the tray. Quit from the tray menu.
 
 Development builds (`cargo run`) never register themselves to start at sign-in.
+For development, `HOMEKVM_PROFILE=b` runs a second, separate copy on the same PC (debug
+builds only).

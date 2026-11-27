@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 /// What the tray dot and the status pill show.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(dead_code)] // Away and Attention arrive with mouse sharing (phase 3).
+#[allow(dead_code)] // Attention: for problems such as a blocked firewall (later).
 pub enum Status {
     /// At least one paired PC is connected; the mouse is here.
     Connected,
@@ -88,6 +88,10 @@ pub struct NetView {
     pub connecting: Option<String>,
     /// Something to tell the user (pairing declined, PC unreachable, ...).
     pub notice: Option<String>,
+    /// This PC's keyboard and mouse are on this PC (by name) right now.
+    pub controlling: Option<String>,
+    /// This PC is controlled by that PC (by name) right now.
+    pub controlled_by: Option<String>,
 }
 
 impl NetView {
@@ -131,12 +135,19 @@ impl Shared {
 
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::SeqCst);
+        if paused {
+            // Pausing always brings the keyboard and mouse back here.
+            crate::input::request_release();
+        }
     }
 
     pub fn status(&self) -> Status {
+        let net = self.net();
         if self.paused() {
             Status::Paused
-        } else if self.net().peers.iter().any(|p| p.paired && p.connected) {
+        } else if net.controlling.is_some() {
+            Status::Away
+        } else if net.peers.iter().any(|p| p.paired && p.connected) {
             Status::Connected
         } else {
             Status::NotConnected

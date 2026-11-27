@@ -118,8 +118,7 @@ fn run(shared: Arc<Shared>, rx: Receiver<()>, id_tx: Sender<u32>) {
                             changed = true;
                             win::request_repaint();
                         }
-                        // Mouse sharing arrives in phase 3; until then the mouse is always here.
-                        CMD_HOME => {}
+                        CMD_HOME => crate::input::request_release(),
                         CMD_QUIT => {
                             // Remove the icon now rather than leaving a ghost in the tray.
                             drop(tray);
@@ -245,10 +244,11 @@ unsafe fn show_menu(owner: HWND, shared: &Shared) -> u32 {
     let mut paired: Vec<_> = shared.net().peers.into_iter().filter(|p| p.paired).collect();
     paired.sort_by_key(|p| (!p.connected, p.name.to_lowercase()));
     let connected = paired.iter().filter(|p| p.connected).count();
-    let detail = if status == Status::Connected {
-        format!("{connected} PC{} linked, mouse is here", if connected == 1 { "" } else { "s" })
-    } else {
-        status.detail().to_string()
+    let net = shared.net();
+    let detail = match (status, &net.controlling) {
+        (Status::Away, Some(name)) => format!("mouse and keys on {name}"),
+        (Status::Connected, _) => format!("{connected} PC{} linked, mouse is here", if connected == 1 { "" } else { "s" }),
+        _ => status.detail().to_string(),
     };
     let peer_rows: Vec<(Row, u32)> = paired
         .into_iter()

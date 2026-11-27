@@ -178,6 +178,11 @@ impl App {
             ui.label(RichText::new(describe(&self.attached)).color(muted(ui)));
             ui.add_space(2.0);
 
+            if !crate::input::available() {
+                // Built with --no-default-features: no global keyboard and mouse hooks.
+                ui.label("Keyboard and mouse sharing isn't included in this build.");
+                return;
+            }
             let mut share = self.cfg.share_input.unwrap_or(suggested);
             let hint = match (self.cfg.share_input, suggested) {
                 (None, true) => "Suggested: an external keyboard or mouse is plugged in".to_string(),
@@ -189,6 +194,9 @@ impl App {
             }
             if self.cfg.share_input.is_some() && ui.small_button("Use the suggestion").clicked() {
                 self.cfg.share_input = None;
+            }
+            if let Some(name) = &self.view.controlled_by {
+                ui.label(RichText::new(format!("{name} is using this PC. Move this PC's mouse to take it back.")).color(muted(ui)));
             }
         });
     }
@@ -384,6 +392,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.hide_instead_of_close(ctx);
         self.view = self.shared.net();
+        apply_settings(&self.cfg, &self.attached);
 
         if self.last_scan.elapsed() >= RESCAN {
             self.attached = devices::scan();
@@ -443,6 +452,14 @@ impl eframe::App for App {
 
         self.save_if_changed();
     }
+}
+
+/// Apply the sharing settings: keyboard and mouse hooks on or off, and which
+/// clipboard kinds are shared.
+pub fn apply_settings(cfg: &Config, attached: &Attached) {
+    crate::input::set_enabled(cfg.share_input.unwrap_or(attached.suggests_sharing()));
+    crate::input::set_edge_delay(cfg.edge_delay);
+    crate::clipboard::set_options(cfg.clipboard_text, cfg.clipboard_images);
 }
 
 /// Dev builds only: HOMEKVM_DEMO=1 fills the screen row with sample PCs.

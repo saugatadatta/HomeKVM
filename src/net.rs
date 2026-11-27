@@ -5,12 +5,21 @@
 //! - Pairing: one PC asks, both show the same 6-digit code (derived from the TLS
 //!   session), and the user confirms on both. Each PC then remembers the other's ID.
 //! - Paired PCs reconnect on their own: the PC with the smaller ID dials.
+//! - Keyboard and mouse sharing: when the cursor reaches an edge with a paired PC
+//!   placed there, this PC becomes the controller and sends its input to that PC
+//!   (see input.rs). The target reports when the cursor is pushed past its own edges,
+//!   so the mouse can move along the row of PCs or come home.
+//! - Shared clipboard: a copy made on this PC goes to every connected paired PC
+//!   (see clipboard.rs); copies from them replace this PC's clipboard.
 //!
 //! Runs on its own thread with a small single-threaded async runtime.
 
+use crate::config::Layout;
 use crate::identity::{self, Identity};
+use crate::clipboard::{self, Clip};
+use crate::input::{self, Local};
 use crate::peers::{self, Paired};
-use crate::proto::{self, Msg};
+use crate::proto::{self, Edge, Msg};
 use crate::state::{NetView, PairingView, PeerView, Shared};
 use crate::{tls, win};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -60,14 +69,26 @@ impl NetHandle {
 /// Start the network thread. `on_change` runs whenever the shared NetView changes.
 pub fn start(shared: Arc<Shared>, name: String, on_change: Arc<dyn Fn() + Send + Sync>) -> NetHandle {
     let (tx, rx) = unbounded_channel();
+    // Keyboard and mouse events from this PC's hooks.
+    let (local_tx, local_rx) = unbounded_channel();
+    input::start(local_tx);
+    // Copies made on this PC.
+    let (clip_tx, clip_rx) = unbounded_channel();
+    clipboard::start(clip_tx);
     std::thread::Builder::new()
         .name("net".into())
         .spawn(move || {
+            // Screen coordinates in physical pixels for replaying input.
+            unsafe {
+                windows_sys::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
+                    windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                );
+            }
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(r) => r,
                 Err(e) => return fail(&shared, &on_change, e.to_string()),
             };
-            let result = runtime.block_on(run(shared.clone(), name, rx, on_change.clone()));
+            let result = runtime.block_on(run(shared.clone(), name, rx, local_rx, clip_rx, on_change.clone()));
             if let Err(e) = result {
                 fail(&shared, &on_change, e);
             }
@@ -103,6 +124,25 @@ struct Inner {
     notice: Option<String>,
     /// mDNS full name -> peer ID, to handle "service removed".
     mdns_names: HashMap<String, String>,
+    /// This PC's keyboard and mouse control another PC right now.
+    control: Option<Control>,
+    /// Another PC controls this one right now.
+    controlled_by: Option<String>,
+}
+
+/// Which PC gets this PC's input, and where it sits in the row (negative = left).
+struct Control {
+    target: String,
+    pos: i32,
+}
+
+/// The paired PC at a row position: 1 is next to this PC on the right, -1 on the left.
+fn peer_at(layout: &Layout, pos: i32) -> Option<String> {
+    match pos {
+        p if p > 0 => layout.right.get(p as usize - 1).cloned(),
+        p if p < 0 => layout.left.get((-p) as usize - 1).cloned(),
+        _ => None,
+    }
 }
 
 #[derive(Default)]
@@ -130,6 +170,26 @@ struct Pairing {
 }
 
 impl Inner {
+    fn online(&self, id: &str) -> bool {
+        self.peers.get(id).is_some_and(|p| p.paired && p.link.is_some())
+    }
+
+    /// Input comes back to this PC; `place` puts the cursor at that edge.
+    fn stop_control(&mut self, place: Option<(Edge, f32)>) {
+        if let Some(c) = self.control.take() {
+            self.send(&c.target, Msg::Leave);
+            input::release(place);
+        }
+    }
+
+    /// Another PC stops controlling this one.
+    fn end_controlled(&mut self) {
+        if self.controlled_by.take().is_some() {
+            input::inject_release_all();
+            input::set_controlled(false);
+        }
+    }
+
     fn send(&self, id: &str, msg: Msg) {
         if let Some(link) = self.peers.get(id).and_then(|p| p.link.as_ref()) {
             let _ = link.tx.send(msg);
@@ -214,6 +274,8 @@ impl Net {
                 }),
                 connecting: inner.pending_pair.clone(),
                 notice: inner.notice.clone(),
+                controlling: inner.control.as_ref().map(|c| inner.name_of(&c.target)),
+                controlled_by: inner.controlled_by.as_ref().map(|id| inner.name_of(id)),
             }
         };
         self.shared.set_net(view);
@@ -225,6 +287,8 @@ async fn run(
     shared: Arc<Shared>,
     name: String,
     mut cmds: UnboundedReceiver<Cmd>,
+    mut local: UnboundedReceiver<Local>,
+    mut clips: UnboundedReceiver<Clip>,
     on_change: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(), String> {
     let me: Identity = identity::load_or_create()?;
@@ -285,6 +349,8 @@ async fn run(
     let mut tick = tokio::time::interval(Duration::from_secs(3));
     loop {
         tokio::select! {
+            Some(event) = local.recv() => on_local(&net, event),
+            Some(clip) = clips.recv() => share_clip(&net, clip),
             Some(cmd) = cmds.recv() => on_command(&net, cmd),
             Some(event) = found_rx.recv() => on_discovery(&net, event),
             _ = tick.tick() => maintain(&net, &mdns, port),
@@ -544,10 +610,35 @@ async fn run_link(net: Arc<Net>, conn: quinn::Connection, dialed: bool) {
     }
     net.publish();
 
+    // Clipboard copies from this PC arrive on their own streams.
+    let clip_reader = {
+        let (net, conn, id) = (net.clone(), conn.clone(), id.clone());
+        tokio::spawn(async move {
+            while let Ok(mut stream) = conn.accept_uni().await {
+                let result = proto::read_clip(&mut stream).await;
+                let trusted = net.lock().peers.get(&id).is_some_and(|p| p.paired);
+                match result {
+                    Ok(clip) if trusted => {
+                        dlog!(
+                            "clipboard from {}: text {}, image {} bytes",
+                            identity::short(&id),
+                            clip.text.as_ref().map_or(0, |t| t.len()),
+                            clip.image.as_ref().map_or(0, |i| i.len())
+                        );
+                        clipboard::apply(clip);
+                    }
+                    Ok(_) => {}
+                    Err(e) => dlog!("clipboard from {}: {e}", identity::short(&id)),
+                }
+            }
+        })
+    };
+
     while let Ok(msg) = proto::read(&mut recv).await {
         on_message(&net, &id, &conn, msg);
     }
 
+    clip_reader.abort();
     writer.abort();
     dlog!("link down with {}", identity::short(&id));
     {
@@ -556,6 +647,14 @@ async fn run_link(net: Arc<Net>, conn: quinn::Connection, dialed: bool) {
         if mine {
             if let Some(peer) = inner.peers.get_mut(&id) {
                 peer.link = None;
+            }
+            // A dropped connection never leaves the keyboard or mouse stuck elsewhere.
+            if inner.control.as_ref().is_some_and(|c| c.target == id) {
+                inner.control = None;
+                input::release(None);
+            }
+            if inner.controlled_by.as_deref() == Some(id.as_str()) {
+                inner.end_controlled();
             }
             if inner.pairing.as_ref().is_some_and(|p| p.id == id) {
                 inner.pairing = None;
@@ -568,6 +667,12 @@ async fn run_link(net: Arc<Net>, conn: quinn::Connection, dialed: bool) {
 }
 
 fn on_message(net: &Net, id: &str, conn: &quinn::Connection, msg: Msg) {
+    // Mouse moves, keys and buttons arrive hundreds of times a second: handle them
+    // without redrawing the window.
+    let msg = match on_input_message(net, id, msg) {
+        Some(other) => other,
+        None => return,
+    };
     let mut open_window = false;
     {
         let mut inner = net.lock();
@@ -627,12 +732,167 @@ fn on_message(net: &Net, id: &str, conn: &quinn::Connection, msg: Msg) {
                     inner.save_paired();
                 }
             }
+            // Keyboard and mouse messages were handled in on_input_message.
+            _ => {}
         }
     }
     if open_window {
         win::show_main_window();
     }
     net.publish();
+}
+
+/// Keyboard and mouse sharing messages. Returns other messages untouched.
+fn on_input_message(net: &Net, id: &str, msg: Msg) -> Option<Msg> {
+    let mut inner = net.lock();
+    // Only trusted PCs may move this PC's mouse or type on it.
+    let trusted = inner.peers.get(id).is_some_and(|p| p.paired);
+    let from_controller = inner.controlled_by.as_deref() == Some(id);
+    let to_target = inner.control.as_ref().is_some_and(|c| c.target == id);
+    let mut changed = false;
+
+    match msg {
+        Msg::Move { dx, dy } if from_controller => {
+            if let Some((dir, y)) = input::inject_move(dx, dy) {
+                inner.send(id, Msg::Overflow { dir, y });
+            }
+        }
+        Msg::Button { b, down } if from_controller => input::inject_button(b, down),
+        Msg::Wheel { d, h } if from_controller => input::inject_wheel(d, h),
+        Msg::Key { vk, sc, ext, down } if from_controller => input::inject_key(vk, sc, ext, down),
+        Msg::Move { .. } | Msg::Button { .. } | Msg::Wheel { .. } | Msg::Key { .. } => {}
+
+        Msg::Enter { edge, y } => {
+            if !trusted || !input::available() || net.shared.paused() {
+                // Can't or won't be controlled right now: send the mouse back.
+                inner.send(id, Msg::TakeOver);
+            } else {
+                // Someone else's mouse arriving here wins over our own outgoing control.
+                inner.stop_control(None);
+                if inner.controlled_by.as_deref() != Some(id) {
+                    inner.end_controlled();
+                }
+                inner.controlled_by = Some(id.to_string());
+                input::set_controlled(true);
+                input::inject_enter(edge, y);
+                changed = true;
+            }
+        }
+        Msg::Leave => {
+            if from_controller {
+                inner.end_controlled();
+                changed = true;
+            }
+        }
+        Msg::Overflow { dir, y } => {
+            if to_target {
+                let from = inner.control.as_ref().map(|c| c.pos).unwrap_or(0);
+                let pos = from + dir as i32;
+                if pos == 0 {
+                    // Back home: the cursor appears at the edge facing that PC.
+                    let edge = if from > 0 { Edge::Right } else { Edge::Left };
+                    inner.stop_control(Some((edge, y)));
+                } else if let Some(next) = peer_at(&net.shared.layout(), pos).filter(|n| inner.online(n)) {
+                    // On along the row to the next PC.
+                    inner.send(id, Msg::Leave);
+                    let edge = if dir > 0 { Edge::Left } else { Edge::Right };
+                    inner.send(&next, Msg::Enter { edge, y });
+                    inner.control = Some(Control { target: next, pos });
+                }
+                changed = true;
+            }
+        }
+        Msg::TakeOver => {
+            if to_target {
+                inner.stop_control(None);
+                changed = true;
+            }
+        }
+        other => return Some(other),
+    }
+    drop(inner);
+    if changed {
+        net.publish();
+    }
+    None
+}
+
+/// A copy made on this PC: send it to every connected paired PC. Last copy wins.
+fn share_clip(net: &Arc<Net>, clip: Clip) {
+    let conns: Vec<(String, quinn::Connection)> = net
+        .lock()
+        .peers
+        .iter()
+        .filter(|(_, p)| p.paired)
+        .filter_map(|(id, p)| p.link.as_ref().map(|l| (id.clone(), l.conn.clone())))
+        .collect();
+    let clip = Arc::new(clip);
+    for (id, conn) in conns {
+        let clip = clip.clone();
+        tokio::spawn(async move {
+            if let Err(e) = proto::send_clip(&conn, &clip).await {
+                dlog!("clipboard to {}: {e}", identity::short(&id));
+            }
+        });
+    }
+}
+
+/// Events from this PC's own keyboard and mouse hooks.
+fn on_local(net: &Arc<Net>, event: Local) {
+    let mut inner = net.lock();
+    let target = inner.control.as_ref().map(|c| c.target.clone());
+    let mut changed = false;
+    match event {
+        Local::Move { dx, dy } => {
+            if let Some(t) = &target {
+                inner.send(t, Msg::Move { dx, dy });
+            }
+        }
+        Local::Button { b, down } => {
+            if let Some(t) = &target {
+                inner.send(t, Msg::Button { b, down });
+            }
+        }
+        Local::Wheel { d, h } => {
+            if let Some(t) = &target {
+                inner.send(t, Msg::Wheel { d, h });
+            }
+        }
+        Local::Key { vk, sc, ext, down } => {
+            if let Some(t) = &target {
+                inner.send(t, Msg::Key { vk, sc, ext, down });
+            }
+        }
+        Local::EdgePush { dir, y } => {
+            let busy = target.is_some() || inner.controlled_by.is_some() || net.shared.paused();
+            let next = peer_at(&net.shared.layout(), dir as i32).filter(|id| inner.online(id));
+            if let (false, Some(id)) = (busy, next) {
+                let edge = if dir > 0 { Edge::Left } else { Edge::Right };
+                inner.control = Some(Control { target: id.clone(), pos: dir as i32 });
+                input::capture();
+                inner.send(&id, Msg::Enter { edge, y });
+                changed = true;
+            }
+        }
+        Local::Release => {
+            if target.is_some() {
+                inner.stop_control(None);
+                changed = true;
+            }
+        }
+        Local::Activity => {
+            // Someone is using this PC's own keyboard or mouse: they take over.
+            if let Some(id) = inner.controlled_by.clone() {
+                inner.send(&id, Msg::TakeOver);
+                inner.end_controlled();
+                changed = true;
+            }
+        }
+    }
+    drop(inner);
+    if changed {
+        net.publish();
+    }
 }
 
 /// Every few seconds: timeouts, reconnecting paired PCs, and name changes.

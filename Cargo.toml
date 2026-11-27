@@ -1,6 +1,6 @@
 [package]
 name = "homekvm"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 description = "Share one keyboard and mouse, the clipboard and files across your home PCs"
 publish = false
@@ -8,6 +8,12 @@ publish = false
 [[bin]]
 name = "HomeKVM"
 path = "src/main.rs"
+
+[features]
+default = ["input"]
+# Keyboard and mouse sharing: global input hooks and input injection. Build without it
+# (cargo build --no-default-features) on PCs where such hooks aren't allowed.
+input = []
 
 [dependencies]
 eframe = "0.29"
@@ -31,10 +37,13 @@ windows-sys = { version = "0.59", features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_Controls",
     "Win32_Security",
+    "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
     "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

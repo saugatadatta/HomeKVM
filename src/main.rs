@@ -5,11 +5,13 @@
 compile_error!("HomeKVM currently supports Windows only; macOS and Linux come in a later phase.");
 
 mod autostart;
+mod clipboard;
 mod config;
 mod devices;
 mod icon;
 mod icon_art;
 mod identity;
+mod input;
 mod menu_icons;
 mod net;
 mod peers;
@@ -51,6 +53,8 @@ fn main() {
         })
     };
     let net = net::start(shared.clone(), cfg.device_name.clone(), on_change);
+    // Sharing follows the settings from the start, even before the window opens.
+    ui::apply_settings(&cfg, &devices::scan());
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
