@@ -40,6 +40,10 @@ back to this repository.
 Next: free code signing (see [SIGNING.md](SIGNING.md)).
 
 ## Download
+Two ways, same app: a single portable `HomeKVM.exe` from GitHub Releases (below), or the
+Microsoft Store (coming; see [STORE.md](STORE.md)). The Store version is updated by the Store;
+the GitHub version updates itself from GitHub Releases.
+
 Get `HomeKVM.exe` from [Releases](https://github.com/saugatadatta/HomeKVM/releases/latest).
 It's a single file: run it on each PC. Every release is built from this repo by GitHub
 Actions. To start HomeKVM with Windows, turn on **Start when I sign in** in its Settings; it's
@@ -127,4 +131,8 @@ builds only).
 
 ## License
 MIT. See [LICENSE](LICENSE).
+
+The window's icons come from [Tabler Icons](https://tabler.io/icons) (MIT, see
+[assets/fonts/TABLER-ICONS-LICENSE.txt](assets/fonts/TABLER-ICONS-LICENSE.txt)); the app
+carries only the few it uses.
 

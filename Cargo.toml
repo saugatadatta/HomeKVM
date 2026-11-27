@@ -1,6 +1,6 @@
 [package]
 name = "homekvm"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Share one keyboard and mouse, the clipboard and files across your home PCs"
 license = "MIT"
@@ -33,6 +33,8 @@ tray-icon = "0.19"
 windows-core = "0.58"
 windows = { version = "0.58", features = [
     "implement",
+    "ApplicationModel",
+    "Foundation",
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
@@ -51,6 +53,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Graphics_Gdi",
     "Win32_Networking_WinHttp",
     "Win32_Security_WinTrust",
+    "Win32_Storage_Packaging_Appx",
     "Win32_UI_Controls",
     "Win32_Security",
     "Win32_Security_Cryptography",
@@ -64,6 +67,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+# Only for examples/store_assets.rs (Microsoft Store images).
+png = "0.17"
 
 [build-dependencies]
 embed-resource = "2.5"

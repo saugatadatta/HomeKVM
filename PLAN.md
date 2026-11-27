@@ -120,8 +120,8 @@ Paste, in any app.
 5. Files and folders through the same shared clipboard, with progress.
 6. Releases and code signing (see below).
 
-Later, to decide after keyboard and mouse sharing is tested on real PCs: **Above and Below**
-as a simple cross (one PC above and one below this PC, next to the left/right row).
+PCs sit to the left and right only. Above and Below (a cross of screens) was tried during
+0.10 and dropped to keep the layout simple.
 
 ## Code signing (free)
 Unsigned, HomeKVM.exe shows a SmartScreen warning ("Windows protected your PC") and is more
@@ -145,7 +145,9 @@ Steps:
    off until SignPath is set up.
 4. Once approved, add the SignPath step to the release workflow, so tagged builds are signed
    before they're attached to the Release. Only CI builds get signed, never local ones.
-5. Later, optionally: an MSIX package for the Microsoft Store.
+5. In parallel: the Microsoft Store as a second channel. GitHub Actions builds an MSIX
+   package from the same exe on every push and, once Partner Center is set up, submits it
+   on every version tag. The Store signs and updates that version. See [STORE.md](STORE.md).
 
 ## Risk: antivirus false positives
 Global keyboard hooks, input injection, start-at-login and network traffic in one unsigned

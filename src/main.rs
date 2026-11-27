@@ -4,6 +4,7 @@
 #[cfg(not(windows))]
 compile_error!("HomeKVM is a Windows app.");
 
+mod activity;
 mod autostart;
 mod clipboard;
 mod config;
@@ -27,7 +28,8 @@ mod win;
 
 use std::sync::Arc;
 
-pub const WINDOW_WIDTH: f32 = 440.0;
+/// Two columns side by side; the height fits the content (ui.rs).
+pub const WINDOW_WIDTH: f32 = 860.0;
 
 fn main() {
     // One copy per user session. Starting it again opens the running copy's window.
@@ -75,7 +77,7 @@ fn main() {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(profile::title())
             // Fixed width, no resizing, no maximize. The height fits the content (ui.rs).
-            .with_inner_size([WINDOW_WIDTH, 720.0])
+            .with_inner_size([WINDOW_WIDTH, 640.0])
             .with_resizable(false)
             .with_maximize_button(false)
             // Always start in the tray; the window opens from the tray icon.

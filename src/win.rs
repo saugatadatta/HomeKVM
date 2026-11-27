@@ -25,6 +25,21 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Running from the Microsoft Store package (MSIX) rather than as the standalone exe.
+/// The Store version updates through the Store and starts at sign-in through the
+/// package's startup task.
+pub fn is_packaged() -> bool {
+    static PACKAGED: OnceLock<bool> = OnceLock::new();
+    *PACKAGED.get_or_init(|| {
+        const APPMODEL_ERROR_NO_PACKAGE: u32 = 15700;
+        let mut len = 0u32;
+        let result = unsafe {
+            windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName(&mut len, std::ptr::null_mut())
+        };
+        result != APPMODEL_ERROR_NO_PACKAGE
+    })
+}
+
 /// The "only one HomeKVM" lock this copy holds (0 = none).
 static INSTANCE_LOCK: AtomicIsize = AtomicIsize::new(0);
 

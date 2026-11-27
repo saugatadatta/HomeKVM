@@ -177,6 +177,7 @@ pub fn apply(mut clip: Clip, from: String) {
         return;
     }
     dlog!("applying copy from {}: {}", short(&from), describe(&clip));
+    crate::activity::clip_got(&clip);
     APPLIED_AT.store(unsafe { GetClipboardSequenceNumber() }, SeqCst);
     // Another PC's copy is now the latest: files copied here can no longer be pasted.
     if let Ok(mut offer) = OFFER.lock() {

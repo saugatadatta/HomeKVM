@@ -40,7 +40,12 @@ pub fn check_now() {
 }
 
 /// Start the background updater. `redraw` refreshes the window when the status changes.
+/// The Microsoft Store version is updated by the Store, never by HomeKVM itself.
 pub fn start(shared: Arc<Shared>, redraw: Arc<dyn Fn() + Send + Sync>) {
+    if crate::win::is_packaged() {
+        shared.set_update_status(format!("Version {} · updated by the Microsoft Store", env!("CARGO_PKG_VERSION")));
+        return;
+    }
     std::thread::Builder::new()
         .name("update".into())
         .spawn(move || run(shared, redraw))

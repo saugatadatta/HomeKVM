@@ -27,8 +27,8 @@ use tokio::sync::mpsc::UnboundedSender;
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(feature = "input"), allow(dead_code))]
 pub enum Local {
-    /// The cursor reached a screen edge: -1 left, +1 right; `y` is 0..1 down the screen.
-    EdgePush { dir: i8, y: f32 },
+    /// The cursor reached a screen edge; `y` is the position along it (0..1).
+    EdgePush { edge: crate::proto::Edge, y: f32 },
     Move { dx: i32, dy: i32 },
     Button { b: u8, down: bool },
     Wheel { d: i32, h: bool },
@@ -51,6 +51,96 @@ pub fn request_release() {
 
 static TX: std::sync::OnceLock<UnboundedSender<Local>> = std::sync::OnceLock::new();
 
+/// Counters for Settings > Advanced > Diagnostics: they show where keyboard input
+/// stops (never captured, never sent, never received, or not typed).
+pub mod diag {
+    use crate::activity::Health;
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
+
+    /// Hook status: 0 off, 1 on, negative = the Windows error code when installing failed.
+    pub static KEYBOARD_HOOK: AtomicI64 = AtomicI64::new(0);
+    pub static MOUSE_HOOK: AtomicI64 = AtomicI64::new(0);
+    static CAPTURED: AtomicU64 = AtomicU64::new(0);
+    static SENT: AtomicU64 = AtomicU64::new(0);
+    static RECEIVED: AtomicU64 = AtomicU64::new(0);
+    static IGNORED: AtomicU64 = AtomicU64::new(0);
+    static TYPED: AtomicU64 = AtomicU64::new(0);
+    static FAILED: AtomicU64 = AtomicU64::new(0);
+    static LAST_ERROR: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg_attr(not(feature = "input"), allow(dead_code))]
+    pub fn key_captured() {
+        CAPTURED.fetch_add(1, Relaxed);
+    }
+    pub fn key_sent() {
+        SENT.fetch_add(1, Relaxed);
+    }
+    pub fn key_received() {
+        RECEIVED.fetch_add(1, Relaxed);
+    }
+    pub fn key_ignored() {
+        IGNORED.fetch_add(1, Relaxed);
+    }
+    #[cfg_attr(not(feature = "input"), allow(dead_code))]
+    pub fn key_typed(ok: bool, error: u32) {
+        if ok {
+            TYPED.fetch_add(1, Relaxed);
+        } else {
+            FAILED.fetch_add(1, Relaxed);
+            LAST_ERROR.store(error as u64, Relaxed);
+        }
+    }
+
+    fn hook(name: &str, value: i64) -> String {
+        match value {
+            1 => format!("{name} on"),
+            0 => format!("{name} off"),
+            e => format!("{name} failed ({})", -e),
+        }
+    }
+
+    /// The Hooks line: both on is ok, a failed install is a failure, off is idle.
+    pub fn hooks_row() -> (Health, String) {
+        let (k, m) = (KEYBOARD_HOOK.load(Relaxed), MOUSE_HOOK.load(Relaxed));
+        let health = if k < 0 || m < 0 {
+            Health::Failed
+        } else if k == 1 && m == 1 {
+            Health::Ok
+        } else {
+            Health::Idle
+        };
+        (health, format!("{} · {}", hook("keyboard", k), hook("mouse", m)))
+    }
+
+    /// The Keys line: where keyboard input stops.
+    pub fn keys_row() -> (Health, String) {
+        let counts = [CAPTURED.load(Relaxed), SENT.load(Relaxed), RECEIVED.load(Relaxed), TYPED.load(Relaxed)];
+        let mut keys = format!(
+            "captured {} · sent {} · received {} · typed {}",
+            CAPTURED.load(Relaxed),
+            SENT.load(Relaxed),
+            RECEIVED.load(Relaxed),
+            TYPED.load(Relaxed)
+        );
+        let failed = FAILED.load(Relaxed);
+        if failed > 0 {
+            keys.push_str(&format!(" · failed {failed} (error {})", LAST_ERROR.load(Relaxed)));
+        }
+        let ignored = IGNORED.load(Relaxed);
+        if ignored > 0 {
+            keys.push_str(&format!(" · ignored {ignored}"));
+        }
+        let health = if failed > 0 {
+            Health::Failed
+        } else if counts.iter().all(|&c| c == 0) {
+            Health::Idle
+        } else {
+            Health::Ok
+        };
+        (health, keys)
+    }
+}
+
 fn send(ev: Local) {
     if let Some(tx) = TX.get() {
         let _ = tx.send(ev);
@@ -67,7 +157,7 @@ mod real {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc::UnboundedSender;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
@@ -151,6 +241,8 @@ mod real {
         let (side, y) = match place {
             Some((Edge::Left, y)) => (1, y),
             Some((Edge::Right, y)) => (2, y),
+            Some((Edge::Top, y)) => (3, y),
+            Some((Edge::Bottom, y)) => (4, y),
             None => (0, 0.0),
         };
         post(WM_RELEASE, side, (y.clamp(0.0, 1.0) * 1_000_000.0) as isize);
@@ -197,7 +289,7 @@ mod real {
         keys: usize,
         /// A tiny transparent window that hides the parked cursor.
         overlay: usize,
-        edge_since: Option<(i8, Instant)>,
+        edge_since: Option<(Edge, Instant)>,
         cooldown: Option<Instant>,
         ctrl: bool,
         alt: bool,
@@ -239,9 +331,13 @@ mod real {
             let mut h = h.borrow_mut();
             if h.mouse == 0 {
                 h.mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) as usize;
+                let status = if h.mouse != 0 { 1 } else { -(GetLastError() as i64).max(1) };
+                super::diag::MOUSE_HOOK.store(status, SeqCst);
             }
             if h.keys == 0 {
                 h.keys = SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_proc), module, 0) as usize;
+                let status = if h.keys != 0 { 1 } else { -(GetLastError() as i64).max(1) };
+                super::diag::KEYBOARD_HOOK.store(status, SeqCst);
             }
         });
     }
@@ -257,6 +353,8 @@ mod real {
                 }
             }
         });
+        super::diag::KEYBOARD_HOOK.store(0, SeqCst);
+        super::diag::MOUSE_HOOK.store(0, SeqCst);
         if CAPTURED.load(SeqCst) {
             send(Local::Release);
         }
@@ -279,8 +377,13 @@ mod real {
         }
         if side != 0 {
             let (l, t, w, h) = desktop();
-            let x = if side == 1 { l + 1 } else { l + w - 2 };
-            let y = t + ((y as f32 / 1_000_000.0) * (h - 1) as f32) as i32;
+            let along = y as f32 / 1_000_000.0;
+            let (x, y) = match side {
+                1 => (l + 1, t + (along * (h - 1) as f32) as i32),
+                2 => (l + w - 2, t + (along * (h - 1) as f32) as i32),
+                3 => (l + (along * (w - 1) as f32) as i32, t + 1),
+                _ => (l + (along * (w - 1) as f32) as i32, t + h - 2),
+            };
             SetCursorPos(x, y);
         }
         HOOKS.with(|h| h.borrow_mut().cooldown = Some(Instant::now() + COOLDOWN));
@@ -380,32 +483,38 @@ mod real {
     impl Hooks {
         fn check_edge(&mut self, pt: POINT) {
             let (l, t, w, h) = desktop();
-            let dir: i8 = if pt.x <= l {
-                -1
-            } else if pt.x >= l + w - 1 {
-                1
+            let near_y_end = pt.y <= t + CORNER || pt.y >= t + h - 1 - CORNER;
+            // Which side edge, if any (PCs sit left and right only). Corners never
+            // switch, so their buttons stay usable.
+            let edge = if pt.x <= l && !near_y_end {
+                Some(Edge::Left)
+            } else if pt.x >= l + w - 1 && !near_y_end {
+                Some(Edge::Right)
             } else {
-                0
+                None
             };
-            let corner = pt.y <= t + CORNER || pt.y >= t + h - 1 - CORNER;
             let now = Instant::now();
             let cooling = self.cooldown.is_some_and(|c| now < c);
-            // No switching in corners, right after a switch, or while dragging.
-            if dir == 0 || corner || cooling || any_button_down() {
+            // No switching right after a switch, or while dragging.
+            let Some(edge) = edge.filter(|_| !cooling && !any_button_down()) else {
                 self.edge_since = None;
                 return;
-            }
+            };
             let since = match self.edge_since {
-                Some((d, t0)) if d == dir => t0,
+                Some((e, t0)) if e == edge => t0,
                 _ => {
-                    self.edge_since = Some((dir, now));
+                    self.edge_since = Some((edge, now));
                     now
                 }
             };
             let delay = if EDGE_DELAY.load(SeqCst) { Duration::from_millis(200) } else { Duration::ZERO };
             if now - since >= delay {
-                let y = ((pt.y - t) as f32 / (h - 1) as f32).clamp(0.0, 1.0);
-                send(Local::EdgePush { dir, y });
+                // The position along that edge, 0..1.
+                let along = match edge {
+                    Edge::Left | Edge::Right => (pt.y - t) as f32 / (h - 1) as f32,
+                    Edge::Top | Edge::Bottom => (pt.x - l) as f32 / (w - 1) as f32,
+                };
+                send(Local::EdgePush { edge, y: along.clamp(0.0, 1.0) });
                 self.edge_since = None;
                 self.cooldown = Some(now + COOLDOWN);
             }
@@ -447,6 +556,7 @@ mod real {
                     return false;
                 }
                 send(Local::Key { vk: vk as u16, sc: k.scanCode as u16, ext: k.flags & LLKHF_EXTENDED != 0, down });
+                super::diag::key_captured();
                 true
             } else {
                 if down {
@@ -475,39 +585,51 @@ mod real {
         TARGET.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The cursor arrives at `edge`, `y` (0..1) down the screen.
-    pub fn inject_enter(edge: Edge, y: f32) {
+    /// The cursor arrives at `edge`, at `along` (0..1) along that edge.
+    pub fn inject_enter(edge: Edge, along: f32) {
         let (l, t, w, h) = desktop();
-        let x = match edge {
-            Edge::Left => l as f64 + 1.0,
-            Edge::Right => (l + w) as f64 - 2.0,
+        let along = along.clamp(0.0, 1.0) as f64;
+        let (x, y) = match edge {
+            Edge::Left => (l as f64 + 1.0, t as f64 + along * (h - 1) as f64),
+            Edge::Right => ((l + w) as f64 - 2.0, t as f64 + along * (h - 1) as f64),
+            Edge::Top => (l as f64 + along * (w - 1) as f64, t as f64 + 1.0),
+            Edge::Bottom => (l as f64 + along * (w - 1) as f64, (t + h) as f64 - 2.0),
         };
-        let y = t as f64 + y.clamp(0.0, 1.0) as f64 * (h - 1) as f64;
         *target() = Some(Target { x, y, keys: HashSet::new(), buttons: HashSet::new() });
         move_to(x, y);
     }
 
-    /// Move by a delta. Returns the edge (-1 left, +1 right) and height if pushed past one.
-    pub fn inject_move(dx: i32, dy: i32) -> Option<(i8, f32)> {
+    /// Move by a delta. Returns the edge pushed past, if any, and the position along it.
+    pub fn inject_move(dx: i32, dy: i32) -> Option<(Edge, f32)> {
         let (l, t, w, h) = desktop();
         let mut guard = target();
         let tg = guard.as_mut()?;
-        let (min_x, max_x) = (l as f64, (l + w - 1) as f64);
+        let (min_x, max_x, min_y, max_y) = (l as f64, (l + w - 1) as f64, t as f64, (t + h - 1) as f64);
         tg.x += dx as f64;
-        tg.y = (tg.y + dy as f64).clamp(t as f64, (t + h - 1) as f64);
+        tg.y += dy as f64;
         let over = if tg.x < min_x {
-            tg.x = min_x;
-            Some(-1)
+            Some(Edge::Left)
         } else if tg.x > max_x {
-            tg.x = max_x;
-            Some(1)
+            Some(Edge::Right)
+        } else if tg.y < min_y {
+            Some(Edge::Top)
+        } else if tg.y > max_y {
+            Some(Edge::Bottom)
         } else {
             None
         };
+        tg.x = tg.x.clamp(min_x, max_x);
+        tg.y = tg.y.clamp(min_y, max_y);
         let (x, y) = (tg.x, tg.y);
         drop(guard);
         move_to(x, y);
-        over.map(|dir| (dir, ((y - t as f64) / (h - 1) as f64) as f32))
+        over.map(|edge| {
+            let along = match edge {
+                Edge::Left | Edge::Right => (y - min_y) / (h - 1) as f64,
+                Edge::Top | Edge::Bottom => (x - min_x) / (w - 1) as f64,
+            };
+            (edge, along as f32)
+        })
     }
 
     pub fn inject_button(b: u8, down: bool) {
@@ -602,9 +724,9 @@ mod real {
                 },
             },
         };
-        unsafe {
-            SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
-        }
+        let sent = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+        let error = if sent == 1 { 0 } else { unsafe { GetLastError() } };
+        super::diag::key_typed(sent == 1, error);
     }
 }
 
@@ -627,7 +749,7 @@ mod stub {
     pub fn release(_place: Option<(Edge, f32)>) {}
     pub fn set_controlled(_on: bool) {}
     pub fn inject_enter(_edge: Edge, _y: f32) {}
-    pub fn inject_move(_dx: i32, _dy: i32) -> Option<(i8, f32)> {
+    pub fn inject_move(_dx: i32, _dy: i32) -> Option<(Edge, f32)> {
         None
     }
     pub fn inject_button(_b: u8, _down: bool) {}

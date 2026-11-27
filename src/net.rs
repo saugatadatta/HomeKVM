@@ -91,7 +91,7 @@ pub fn fetch(from: &str, offer: u64, index: usize) -> tokio::sync::mpsc::Receive
 }
 
 async fn fetch_file(conn: quinn::Connection, offer: u64, index: u32, tx: tokio::sync::mpsc::Sender<FetchMsg>) {
-    let result: Result<(), String> = async {
+    let result: Result<u64, String> = async {
         let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
         proto::write_fetch(&mut send, &proto::FetchRequest { offer, index }).await?;
         let _ = send.finish();
@@ -110,12 +110,18 @@ async fn fetch_file(conn: quinn::Connection, offer: u64, index: u32, tx: tokio::
             tx.send(FetchMsg::Data(buf[..n].to_vec())).await.map_err(|e| e.to_string())?;
             left -= n as u64;
         }
-        Ok(())
+        Ok(size)
     }
     .await;
     let _ = tx.send(match result {
-        Ok(()) => FetchMsg::Done,
-        Err(e) => FetchMsg::Failed(e),
+        Ok(size) => {
+            crate::activity::file_got(size);
+            FetchMsg::Done
+        }
+        Err(e) => {
+            crate::activity::file_failed(&e);
+            FetchMsg::Failed(e)
+        }
     })
     .await;
 }
@@ -155,6 +161,9 @@ async fn serve_file(net: Arc<Net>, id: String, mut send: quinn::SendStream, mut 
     }
     let _ = send.finish();
     let _ = tokio::time::timeout(Duration::from_secs(30), send.stopped()).await;
+    if left == 0 {
+        crate::activity::file_sent(size);
+    }
     dlog!("served file {} of copy {} to {}", req.index, req.offer, identity::short(&id));
 }
 
@@ -235,18 +244,25 @@ struct Inner {
     controlled_by: Option<String>,
 }
 
-/// Which PC gets this PC's input, and where it sits in the row (negative = left).
+/// Which PC gets this PC's input, and where it sits.
 struct Control {
     target: String,
-    pos: i32,
+    at: Place,
 }
 
-/// The paired PC at a row position: 1 is next to this PC on the right, -1 on the left.
-fn peer_at(layout: &Layout, pos: i32) -> Option<String> {
-    match pos {
-        p if p > 0 => layout.right.get(p as usize - 1).cloned(),
-        p if p < 0 => layout.left.get((-p) as usize - 1).cloned(),
-        _ => None,
+/// Where a paired PC sits in the row: 1 is next to this PC on the right, -1 on the
+/// left, and so on outward.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Place {
+    Row(i32),
+}
+
+/// The paired PC at a place in the layout.
+fn peer_at(layout: &Layout, at: Place) -> Option<String> {
+    match at {
+        Place::Row(p) if p > 0 => layout.right.get(p as usize - 1).cloned(),
+        Place::Row(p) if p < 0 => layout.left.get((-p) as usize - 1).cloned(),
+        Place::Row(_) => None,
     }
 }
 
@@ -891,14 +907,25 @@ fn on_input_message(net: &Net, id: &str, msg: Msg) -> Option<Msg> {
 
     match msg {
         Msg::Move { dx, dy } if from_controller => {
-            if let Some((dir, y)) = input::inject_move(dx, dy) {
-                inner.send(id, Msg::Overflow { dir, y });
+            if let Some((edge, y)) = input::inject_move(dx, dy) {
+                // Pushed past one of this screen's edges: tell the controller.
+                let (dir, vertical) = match edge {
+                    Edge::Left => (-1, false),
+                    Edge::Right => (1, false),
+                    Edge::Top => (-1, true),
+                    Edge::Bottom => (1, true),
+                };
+                inner.send(id, Msg::Overflow { dir, y, vertical });
             }
         }
         Msg::Button { b, down } if from_controller => input::inject_button(b, down),
         Msg::Wheel { d, h } if from_controller => input::inject_wheel(d, h),
-        Msg::Key { vk, sc, ext, down } if from_controller => input::inject_key(vk, sc, ext, down),
-        Msg::Move { .. } | Msg::Button { .. } | Msg::Wheel { .. } | Msg::Key { .. } => {}
+        Msg::Key { vk, sc, ext, down } if from_controller => {
+            input::diag::key_received();
+            input::inject_key(vk, sc, ext, down)
+        }
+        Msg::Key { .. } => input::diag::key_ignored(),
+        Msg::Move { .. } | Msg::Button { .. } | Msg::Wheel { .. } => {}
 
         Msg::Enter { edge, y } => {
             if !trusted || !input::available() || net.shared.paused() {
@@ -922,20 +949,28 @@ fn on_input_message(net: &Net, id: &str, msg: Msg) -> Option<Msg> {
                 changed = true;
             }
         }
-        Msg::Overflow { dir, y } => {
+        Msg::Overflow { dir, y, vertical } => {
             if to_target {
-                let from = inner.control.as_ref().map(|c| c.pos).unwrap_or(0);
-                let pos = from + dir as i32;
-                if pos == 0 {
-                    // Back home: the cursor appears at the edge facing that PC.
-                    let edge = if from > 0 { Edge::Right } else { Edge::Left };
-                    inner.stop_control(Some((edge, y)));
-                } else if let Some(next) = peer_at(&net.shared.layout(), pos).filter(|n| inner.online(n)) {
-                    // On along the row to the next PC.
-                    inner.send(id, Msg::Leave);
-                    let edge = if dir > 0 { Edge::Left } else { Edge::Right };
-                    inner.send(&next, Msg::Enter { edge, y });
-                    inner.control = Some(Control { target: next, pos });
+                let from = inner.control.as_ref().map(|c| c.at).unwrap_or(Place::Row(0));
+                match (from, vertical) {
+                    (Place::Row(p), false) => {
+                        let pos = p + dir as i32;
+                        if pos == 0 {
+                            // Back home: the cursor appears at the edge facing that PC.
+                            let edge = if p > 0 { Edge::Right } else { Edge::Left };
+                            inner.stop_control(Some((edge, y)));
+                        } else if let Some(next) =
+                            peer_at(&net.shared.layout(), Place::Row(pos)).filter(|n| inner.online(n))
+                        {
+                            // On along the row to the next PC.
+                            inner.send(id, Msg::Leave);
+                            let edge = if dir > 0 { Edge::Left } else { Edge::Right };
+                            inner.send(&next, Msg::Enter { edge, y });
+                            inner.control = Some(Control { target: next, at: Place::Row(pos) });
+                        }
+                    }
+                    // Its top and bottom edges lead nowhere: the cursor just stops there.
+                    _ => {}
                 }
                 changed = true;
             }
@@ -964,6 +999,7 @@ fn share_clip(net: &Arc<Net>, clip: Clip) {
         .filter(|(_, p)| p.paired)
         .filter_map(|(id, p)| p.link.as_ref().map(|l| (id.clone(), l.conn.clone())))
         .collect();
+    crate::activity::clip_sent(&clip, conns.len());
     let clip = Arc::new(clip);
     for (id, conn) in conns {
         let clip = clip.clone();
@@ -999,16 +1035,23 @@ fn on_local(net: &Arc<Net>, event: Local) {
         Local::Key { vk, sc, ext, down } => {
             if let Some(t) = &target {
                 inner.send(t, Msg::Key { vk, sc, ext, down });
+                input::diag::key_sent();
             }
         }
-        Local::EdgePush { dir, y } => {
+        Local::EdgePush { edge, y } => {
             let busy = target.is_some() || inner.controlled_by.is_some() || net.shared.paused();
-            let next = peer_at(&net.shared.layout(), dir as i32).filter(|id| inner.online(id));
-            if let (false, Some(id)) = (busy, next) {
-                let edge = if dir > 0 { Edge::Left } else { Edge::Right };
-                inner.control = Some(Control { target: id.clone(), pos: dir as i32 });
+            let at = match edge {
+                Edge::Left => Some(Place::Row(-1)),
+                Edge::Right => Some(Place::Row(1)),
+                // Only the left and right edges lead to other PCs.
+                Edge::Top | Edge::Bottom => None,
+            };
+            let next = at.and_then(|at| peer_at(&net.shared.layout(), at)).filter(|id| inner.online(id));
+            if let (false, Some(id), Some(at)) = (busy, next, at) {
+                inner.control = Some(Control { target: id.clone(), at });
                 input::capture();
-                inner.send(&id, Msg::Enter { edge, y });
+                // Leaving through this screen's right edge arrives through the other's left.
+                inner.send(&id, Msg::Enter { edge: edge.opposite(), y });
                 changed = true;
             }
         }

@@ -28,7 +28,8 @@ pub enum Msg {
     Unpair,
 
     // ---- Keyboard and mouse sharing (only between paired PCs) ----
-    /// Controller -> target: input now goes to you; show the cursor at `edge`, `y` (0..1) down.
+    /// Controller -> target: input now goes to you; show the cursor at `edge`, `y` (0..1)
+    /// along it (down a left/right edge, across a top/bottom edge).
     Enter { edge: Edge, y: f32 },
     /// Controller -> target: input goes elsewhere now; release any held keys and buttons.
     Leave,
@@ -40,18 +41,40 @@ pub enum Msg {
     Wheel { d: i32, h: bool },
     /// A key by scan code (layout-independent), with the virtual key as a fallback.
     Key { vk: u16, sc: u16, ext: bool, down: bool },
-    /// Target -> controller: the cursor was pushed past my left (-1) or right (+1) edge.
-    Overflow { dir: i8, y: f32 },
+    /// Target -> controller: the cursor was pushed past my left (-1) or right (+1) edge,
+    /// or with `vertical`, past my top (-1) or bottom (+1) edge. `y` is the position along
+    /// that edge (0..1). Older versions don't send `vertical`.
+    Overflow {
+        dir: i8,
+        y: f32,
+        #[serde(default)]
+        vertical: bool,
+    },
     /// Target -> controller: someone is using my own keyboard or mouse; stop sending.
     TakeOver,
 }
 
-/// A screen's left or right edge.
+/// One edge of a screen (the whole desktop across all monitors).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Edge {
     Left,
     Right,
+    Top,
+    Bottom,
+}
+
+impl Edge {
+    /// The edge facing back across the gap: leaving through the right edge means
+    /// arriving through the other screen's left edge.
+    pub fn opposite(self) -> Edge {
+        match self {
+            Edge::Left => Edge::Right,
+            Edge::Right => Edge::Left,
+            Edge::Top => Edge::Bottom,
+            Edge::Bottom => Edge::Top,
+        }
+    }
 }
 
 /// A clipboard copy travels on its own one-way stream, so a large image never holds

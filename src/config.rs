@@ -22,8 +22,9 @@ pub struct Config {
     pub layout: Layout,
 }
 
-/// The row of screens, as paired-PC IDs. Each list starts with the PC next to this
-/// one and goes outward.
+/// Where paired PCs sit around this one, as paired-PC IDs: a row to the left and
+/// right (each list starts with the PC next to this one and goes outward). Older
+/// settings files may still name a PC above or below; those are read as not placed.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct Layout {
@@ -39,10 +40,22 @@ pub enum Side {
 }
 
 impl Side {
+    pub const ALL: [Side; 3] = [Side::Left, Side::Right, Side::NotPlaced];
+
+    /// In the dropdown list.
     pub fn label(self) -> &'static str {
         match self {
             Side::Left => "Left side",
             Side::Right => "Right side",
+            Side::NotPlaced => "Not placed",
+        }
+    }
+
+    /// On the closed dropdown (short, so every dropdown has the same width).
+    pub fn short(self) -> &'static str {
+        match self {
+            Side::Left => "Left",
+            Side::Right => "Right",
             Side::NotPlaced => "Not placed",
         }
     }
@@ -59,7 +72,7 @@ impl Layout {
         }
     }
 
-    /// Move a PC to a side (at the outer end), or take it out of the row.
+    /// Move a PC to a side's outer end, or take it out.
     pub fn place(&mut self, id: &str, side: Side) {
         self.left.retain(|x| x != id);
         self.right.retain(|x| x != id);

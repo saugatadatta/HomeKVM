@@ -1819,11 +1819,12 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "homekvm"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "eframe",
  "embed-resource",
  "mdns-sd",
+ "png 0.17.16",
  "quinn",
  "raw-window-handle",
  "rcgen",
