@@ -1,11 +1,13 @@
-# Builds HomeKVM.exe on GitHub's Windows machines on every push to main (or on demand).
-# This is the build with keyboard and mouse sharing; download it from the run's
-# "Artifacts" on the PCs you'll use it on.
+# Builds HomeKVM.exe on GitHub's Windows machines.
+# - Every push to main: the exe is kept as a run artifact for 30 days.
+# - A version tag (v0.5.0, v0.6.0, ...): the exe is also published as a GitHub Release.
+# This is the build with keyboard and mouse sharing.
 name: Build
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +16,9 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    permissions:
+      # Publishing a release needs write access; plain builds only read.
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -38,3 +43,20 @@ jobs:
           name: HomeKVM-${{ github.sha }}
           path: target/release/HomeKVM.exe
           retention-days: 30
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} doesn't match Cargo.toml version $version" }
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" target/release/HomeKVM.exe `
+            --title "HomeKVM ${{ github.ref_name }}" `
+            --notes-file .github/release-notes.md
