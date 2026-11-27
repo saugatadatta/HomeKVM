@@ -77,6 +77,35 @@ your local network it does the following:
 
 Settings, the paired-PC list and this PC's key stay on this PC (`%APPDATA%\HomeKVM`).
 
+## How the keyboard and mouse hooks are used
+Sharing a keyboard and mouse needs the same Windows features a keylogger would use, so here
+is exactly what HomeKVM does with them. The code is in [`src/input.rs`](src/input.rs).
+
+**On the PC you're using** (low-level keyboard and mouse hooks, `WH_KEYBOARD_LL` and
+`WH_MOUSE_LL`):
+- The hooks are installed only while **Share my keyboard and mouse** is on, and removed
+  when you turn it off.
+- While the mouse is on this PC, input goes to Windows as normal. The hooks only notice when
+  the cursor reaches a screen edge that has a paired PC next to it, and watch for the
+  Ctrl+Alt+Home shortcut. To avoid stuck keys, they remember in memory which keys are held
+  down right now. Nothing is written to disk or sent anywhere.
+- Only after the mouse crosses onto another paired PC does input leave this PC. It goes only
+  to that PC, over the encrypted connection, until the mouse comes back: by the screen edge,
+  Ctrl+Alt+Home, the tray menu, Pause, or a dropped connection.
+
+**On the PC being controlled** (`SendInput`):
+- Input is replayed only for a paired PC that has moved its mouse onto this PC, never for
+  anything else.
+- Touching this PC's own keyboard or mouse takes control back at once. When control leaves,
+  any keys or buttons still held down are released.
+- Input that HomeKVM replays is marked by Windows as injected, and HomeKVM's hooks ignore it,
+  so it never travels further.
+
+Nothing is recorded: there's no keystroke history, log or file. Builds made with
+`--no-default-features` leave out the hooks and `SendInput` entirely.
+
+To report a security problem, see [SECURITY.md](SECURITY.md).
+
 ## Build (Windows)
 Needs Rust. With the GNU toolchain (`x86_64-pc-windows-gnu`), MinGW-w64 binutils must also be
 on `PATH` (`winget install BrechtSanders.WinLibs.POSIX.MSVCRT`), because Rust's bundled
