@@ -118,6 +118,9 @@ Paste, in any app.
 5. Files and folders through the same shared clipboard, with progress.
 6. Releases and code signing (see below).
 
+Later, to decide after keyboard and mouse sharing is tested on real PCs: **Above and Below**
+as a simple cross (one PC above and one below this PC, next to the left/right row).
+
 ## Code signing (free)
 Unsigned, HomeKVM.exe shows a SmartScreen warning ("Windows protected your PC") and is more
 likely to be flagged by antivirus, because keyboard hooks and input injection look like a
@@ -134,8 +137,10 @@ keylogger to heuristics. A signature fixes the warning over time and shows who p
 Steps:
 1. Add an OSI-approved license and keep the repo public. *(Done 2026-11-27: MIT, repo public.)*
 2. Publish versioned releases from GitHub Actions: a tag like `v0.5.0` builds the exe and
-   attaches it to a GitHub Release.
-3. Apply to SignPath Foundation with the repo, license and release.
+   attaches it to a GitHub Release. *(Done: v0.5.0 released 2026-11-27.)*
+3. Apply to SignPath Foundation with the repo, license and release. Step-by-step guide:
+   [SIGNING.md](SIGNING.md). The signing step is already in the release workflow, switched
+   off until SignPath is set up.
 4. Once approved, add the SignPath step to the release workflow, so tagged builds are signed
    before they're attached to the Release. Only CI builds get signed, never local ones.
 5. Later, optionally: an MSIX package for the Microsoft Store.

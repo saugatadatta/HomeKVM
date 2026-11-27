@@ -54,6 +54,8 @@ pub enum Cmd {
     Confirm(String, bool),
     Forget(String),
     Rename(String),
+    /// "Share my keyboard and mouse" is now on or off (told to paired PCs).
+    SetSharing(bool),
     ClearNotice,
 }
 
@@ -217,6 +219,8 @@ struct Net {
 struct Inner {
     name: String,
     name_changed: bool,
+    /// This PC shares its keyboard and mouse.
+    shares: bool,
     peers: BTreeMap<String, Peer>,
     pairing: Option<Pairing>,
     /// Waiting for a connection so pairing can start.
@@ -248,6 +252,8 @@ fn peer_at(layout: &Layout, pos: i32) -> Option<String> {
 
 #[derive(Default)]
 struct Peer {
+    /// That PC shares its keyboard and mouse.
+    shares: bool,
     name: String,
     paired: bool,
     found: bool,
@@ -328,7 +334,8 @@ impl Inner {
         self.save_paired();
         // Tell the other side we trust it now (it reached the same result).
         let name = self.name.clone();
-        self.send(&id, Msg::Hello { name, paired: true });
+        let shares = self.shares;
+        self.send(&id, Msg::Hello { name, paired: true, shares });
     }
 
     /// Forget a PC that's neither trusted, connected nor visible.
@@ -359,6 +366,7 @@ impl Net {
                         paired: p.paired,
                         connected: p.link.is_some(),
                         found: p.found,
+                        shares: p.shares,
                         addr: p
                             .link
                             .as_ref()
@@ -377,6 +385,8 @@ impl Net {
                 notice: inner.notice.clone(),
                 controlling: inner.control.as_ref().map(|c| inner.name_of(&c.target)),
                 controlled_by: inner.controlled_by.as_ref().map(|id| inner.name_of(id)),
+                controlling_id: inner.control.as_ref().map(|c| c.target.clone()),
+                controlled_by_id: inner.controlled_by.clone(),
             }
         };
         self.shared.set_net(view);
@@ -597,6 +607,18 @@ fn on_command(net: &Arc<Net>, cmd: Cmd) {
                 inner.name_changed = true;
             }
         }
+        Cmd::SetSharing(shares) => {
+            let mut inner = net.lock();
+            if inner.shares != shares {
+                inner.shares = shares;
+                let name = inner.name.clone();
+                let ids: Vec<(String, bool)> =
+                    inner.peers.iter().filter(|(_, p)| p.link.is_some()).map(|(id, p)| (id.clone(), p.paired)).collect();
+                for (id, paired) in ids {
+                    inner.send(&id, Msg::Hello { name: name.clone(), paired, shares });
+                }
+            }
+        }
         Cmd::ClearNotice => net.lock().notice = None,
     }
     net.publish();
@@ -684,6 +706,7 @@ async fn run_link(net: Arc<Net>, conn: quinn::Connection, dialed: bool) {
     {
         let mut inner = net.lock();
         let my_name = inner.name.clone();
+        let my_shares = inner.shares;
         let peer = inner.peers.entry(id.clone()).or_default();
         if let Some(old) = peer.link.as_ref().map(|l| l.conn.clone()) {
             // Two links to the same PC (both dialed at once): both sides keep the one
@@ -702,7 +725,7 @@ async fn run_link(net: Arc<Net>, conn: quinn::Connection, dialed: bool) {
         }
         let paired = peer.paired;
         peer.link = Some(Link { conn: conn.clone(), tx: tx.clone(), since: Instant::now() });
-        let _ = tx.send(Msg::Hello { name: my_name, paired });
+        let _ = tx.send(Msg::Hello { name: my_name, paired, shares: my_shares });
         dlog!("link up with {} ({})", identity::short(&id), if dialed { "dialed" } else { "incoming" });
 
         if inner.pending_pair.as_deref() == Some(id.as_str()) {
@@ -792,7 +815,8 @@ fn on_message(net: &Net, id: &str, conn: &quinn::Connection, msg: Msg) {
         let mut inner = net.lock();
         let Some(peer) = inner.peers.get_mut(id) else { return };
         match msg {
-            Msg::Hello { name, paired } => {
+            Msg::Hello { name, paired, shares } => {
+                peer.shares = shares;
                 let renamed = !name.is_empty() && peer.name != name;
                 if !name.is_empty() {
                     peer.name = name;
@@ -1049,7 +1073,8 @@ fn maintain(net: &Arc<Net>, mdns: &ServiceDaemon, port: u16) {
             let ids: Vec<(String, bool)> =
                 inner.peers.iter().filter(|(_, p)| p.link.is_some()).map(|(id, p)| (id.clone(), p.paired)).collect();
             for (id, paired) in ids {
-                inner.send(&id, Msg::Hello { name: name.clone(), paired });
+                let shares = inner.shares;
+                inner.send(&id, Msg::Hello { name: name.clone(), paired, shares });
             }
         }
     }

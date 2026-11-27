@@ -28,20 +28,47 @@ See [PLAN.md](PLAN.md) for the design and phases.
   it back. Not yet tested on real hardware.
 - Phase 4: one shared clipboard for text and images (screenshots too), last copy wins, both
   ways. Password-manager copies marked private are never sent.
-- Phase 5 (this version, 0.5.0): files and folders through the same shared clipboard. Copying
+- Phase 5: files and folders through the same shared clipboard. Copying
   sends only the list; data moves when you paste. Small copies (under 50 MB by default,
   adjustable up to 200 MB under Settings, Advanced) paste as real files in any app; bigger
   ones stream straight into the folder with Explorer's own progress.
 
-Next: releases and free code signing (see PLAN.md).
+Since 0.6.0 the screen cards show a **Server** badge on the PC whose keyboard and mouse
+are in control (when idle, on every PC that shares them), and the window's footer links
+back to this repository.
+
+Next: free code signing (see [SIGNING.md](SIGNING.md)).
 
 ## Download
-Every push to `main` is built by GitHub Actions (Actions tab, latest "Build" run,
-Artifacts). That build includes keyboard and mouse sharing.
+Get `HomeKVM.exe` from [Releases](https://github.com/saugatadatta/HomeKVM/releases/latest).
+It's a single file: run it on each PC. Every release is built from this repo by GitHub
+Actions.
 
-The exe isn't code-signed yet, so Windows SmartScreen shows a warning the first time
+Releases aren't code-signed yet, so Windows SmartScreen shows a warning the first time
 (More info, then Run anyway). Keyboard and mouse sharing uses global input hooks and input
 injection, which antivirus heuristics can mistake for a keylogger until the app is signed.
+
+## Code signing policy
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by
+[SignPath Foundation](https://signpath.org). *(Applied for; releases are unsigned until it's
+approved.)*
+
+- Only release builds made by this repository's GitHub Actions workflow from a version tag
+  are signed, never builds made on someone's own PC.
+- Every signing request is approved by hand.
+- Committers and reviewers: [Saugata Datta](https://github.com/saugatadatta)
+- Approvers: [Saugata Datta](https://github.com/saugatadatta)
+
+## Privacy
+HomeKVM has no accounts, no cloud service and no telemetry. It doesn't contact any server on
+the internet. On your local network it does the following:
+- It announces this PC's name and HomeKVM ID with mDNS, so your other PCs can find it.
+- It talks only to PCs you've paired with a 6-digit code, over an encrypted connection
+  (QUIC with TLS 1.3).
+- It sends those PCs only what you share: keyboard and mouse input while you control them,
+  your clipboard (text, images, file lists), and files when you paste them there.
+
+Settings, the paired-PC list and this PC's key stay on this PC (`%APPDATA%\HomeKVM`).
 
 ## Build (Windows)
 Needs Rust. With the GNU toolchain (`x86_64-pc-windows-gnu`), MinGW-w64 binutils must also be

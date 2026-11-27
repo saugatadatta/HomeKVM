@@ -55,7 +55,9 @@ fn main() {
     };
     let net = net::start(shared.clone(), cfg.device_name.clone(), on_change);
     // Sharing follows the settings from the start, even before the window opens.
-    ui::apply_settings(&cfg, &devices::scan());
+    let attached = devices::scan();
+    ui::apply_settings(&cfg, &attached);
+    net.send(net::Cmd::SetSharing(ui::shares_input(&cfg, &attached)));
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

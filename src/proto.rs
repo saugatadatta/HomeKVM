@@ -9,9 +9,15 @@ const MAX_MESSAGE: usize = 64 * 1024;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Msg {
-    /// Sent first by both sides, and again when the name changes.
-    /// `paired` says whether the sender trusts the receiver.
-    Hello { name: String, paired: bool },
+    /// Sent first by both sides, and again when the name or sharing changes.
+    /// `paired` says whether the sender trusts the receiver; `shares` whether the sender
+    /// shares its keyboard and mouse (can act as the "server").
+    Hello {
+        name: String,
+        paired: bool,
+        #[serde(default)]
+        shares: bool,
+    },
     /// "Let's pair": the receiver shows the code and asks its user.
     PairRequest,
     /// The sender's user confirmed the codes match.

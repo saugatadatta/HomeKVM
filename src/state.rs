@@ -61,6 +61,8 @@ pub struct PeerView {
     pub connected: bool,
     /// Seen on the local network.
     pub found: bool,
+    /// Shares its keyboard and mouse (can act as the "server").
+    pub shares: bool,
     pub addr: Option<String>,
 }
 
@@ -92,6 +94,9 @@ pub struct NetView {
     pub controlling: Option<String>,
     /// This PC is controlled by that PC (by name) right now.
     pub controlled_by: Option<String>,
+    /// The same two, by ID.
+    pub controlling_id: Option<String>,
+    pub controlled_by_id: Option<String>,
 }
 
 impl NetView {

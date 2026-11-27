@@ -38,11 +38,39 @@ jobs:
         run: cargo build --release --locked
 
       - name: Upload HomeKVM.exe
+        id: upload
         uses: actions/upload-artifact@v7
         with:
           name: HomeKVM-${{ github.sha }}
           path: target/release/HomeKVM.exe
           retention-days: 30
+
+      # Code signing through SignPath Foundation (see SIGNING.md). Release tags only, and
+      # only once the repository variable SIGNPATH_ORGANIZATION_ID is set; until then
+      # releases are published unsigned. Each request waits for approval on SignPath.
+      - name: Sign with SignPath
+        id: sign
+        if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'HomeKVM' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          # Empty uses the project's default artifact configuration.
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Check the signature
+        if: steps.sign.outcome == 'success'
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature signed/HomeKVM.exe
+          if ($sig.Status -ne 'Valid') { throw "Signature is $($sig.Status)" }
+          "Signed by: $($sig.SignerCertificate.Subject)"
 
       - name: Check the tag matches the app version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -57,6 +85,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" target/release/HomeKVM.exe `
+          # The signed exe when signing ran, otherwise the unsigned build.
+          $exe = if (Test-Path signed/HomeKVM.exe) { "signed/HomeKVM.exe" } else { "target/release/HomeKVM.exe" }
+          gh release create "${{ github.ref_name }}" $exe `
             --title "HomeKVM ${{ github.ref_name }}" `
             --notes-file .github/release-notes.md

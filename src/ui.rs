@@ -37,15 +37,30 @@ pub struct App {
     view: NetView,
     /// "Forget" was clicked once for this PC; waiting for the second click.
     confirm_forget: Option<String>,
+    /// The "share my keyboard and mouse" value last told to the network side.
+    sent_sharing: Option<bool>,
+}
+
+/// The "server" badge on a screen card: the PC whose keyboard and mouse drive.
+#[derive(Clone, Copy, PartialEq)]
+enum Badge {
+    /// Shares its keyboard and mouse; nobody is controlling anything right now.
+    Server,
+    /// Its keyboard and mouse are controlling another PC right now.
+    InUse,
 }
 
 /// One screen in the layout row.
 enum Slot {
-    Me(String),
-    /// Name, side, online.
-    Peer(String, &'static str, bool),
+    /// This PC: name, badge, being used by another PC right now.
+    Me(String, Option<Badge>, bool),
+    /// A paired PC: name, side, online, badge, being used by this PC right now.
+    Peer(String, &'static str, bool, Option<Badge>, bool),
     Empty(&'static str),
 }
+
+/// Space above the screen cards for the badge.
+const BADGE_ROOM: f32 = 10.0;
 
 impl App {
     pub fn new(
@@ -79,6 +94,7 @@ impl App {
             net,
             view: NetView::default(),
             confirm_forget: None,
+            sent_sharing: None,
         }
     }
 
@@ -115,17 +131,33 @@ impl App {
             );
             ui.add_space(4.0);
 
+            // Who's the "server": while someone controls, only that PC; when idle, every
+            // connected PC that shares its keyboard and mouse.
+            let controlling = self.view.controlling_id.clone();
+            let controlled_by = self.view.controlled_by_id.clone();
+            let idle = controlling.is_none() && controlled_by.is_none();
+
             // The whole row: PCs on the left (outermost first), this PC, PCs on the right.
             // Only paired PCs are shown; the layout stores their IDs.
             let side = |ids: &[String], label: &'static str| -> Vec<Slot> {
                 if demo_layout() {
                     // Dev-only preview of a long row (HOMEKVM_DEMO=1); never saved.
                     let names: &[&str] = if label == "left" { &["Work laptop", "Old MacBook"] } else { &["Mini PC", "Media PC"] };
-                    return names.iter().map(|n| Slot::Peer(n.to_string(), label, true)).collect();
+                    return names.iter().map(|n| Slot::Peer(n.to_string(), label, true, None, false)).collect();
                 }
                 ids.iter()
                     .filter_map(|id| self.view.peer(id).filter(|p| p.paired))
-                    .map(|p| Slot::Peer(p.name.clone(), label, p.connected))
+                    .map(|p| {
+                        let badge = if controlled_by.as_deref() == Some(p.id.as_str()) {
+                            Some(Badge::InUse)
+                        } else if idle && p.shares && p.connected {
+                            Some(Badge::Server)
+                        } else {
+                            None
+                        };
+                        let used = controlling.as_deref() == Some(p.id.as_str());
+                        Slot::Peer(p.name.clone(), label, p.connected, badge, used)
+                    })
                     .collect()
             };
             let (left, right) = (side(&self.cfg.layout.left, "left"), side(&self.cfg.layout.right, "right"));
@@ -136,7 +168,14 @@ impl App {
             }
             row.extend(left.into_iter().rev());
             let me = row.len();
-            row.push(Slot::Me(self.cfg.device_name.clone()));
+            let my_badge = if controlling.is_some() {
+                Some(Badge::InUse)
+            } else if idle && (shares_input(&self.cfg, &self.attached) || demo_layout()) {
+                Some(Badge::Server)
+            } else {
+                None
+            };
+            row.push(Slot::Me(self.cfg.device_name.clone(), my_badge, controlled_by.is_some()));
             let right_empty = right.is_empty();
             row.extend(right);
             if right_empty {
@@ -150,7 +189,7 @@ impl App {
 
             let (gap, arrow_w) = (8.0, 18.0);
             let w = ((ui.available_width() - 2.0 * arrow_w - 4.0 * gap) / VISIBLE as f32).min(124.0);
-            let size = Vec2::new(w, 84.0);
+            let size = Vec2::new(w, 84.0 + BADGE_ROOM);
             let total = VISIBLE as f32 * w + 2.0 * arrow_w + 4.0 * gap;
             ui.horizontal(|ui| {
                 ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
@@ -393,6 +432,12 @@ impl eframe::App for App {
         self.hide_instead_of_close(ctx);
         self.view = self.shared.net();
         apply_settings(&self.cfg, &self.attached);
+        // Tell paired PCs when this PC starts or stops sharing its keyboard and mouse.
+        let sharing = shares_input(&self.cfg, &self.attached);
+        if self.sent_sharing != Some(sharing) {
+            self.net.send(Cmd::SetSharing(sharing));
+            self.sent_sharing = Some(sharing);
+        }
 
         if self.last_scan.elapsed() >= RESCAN {
             self.attached = devices::scan();
@@ -416,15 +461,7 @@ impl eframe::App for App {
                     ui.colored_label(Color32::from_rgb(218, 54, 51), e);
                 }
                 ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!(
-                        "Version {} · encrypted, paired PCs only · this PC's ID {}",
-                        env!("CARGO_PKG_VERSION"),
-                        self.view.my_id
-                    ))
-                    .size(12.0)
-                    .color(muted(ui)),
-                );
+                footer(ui, &self.view.my_id);
                 // The cursor sits just below the last widget, whatever the panel's size.
                 let bottom = ui.cursor().min.y - ui.spacing().item_spacing.y;
                 needed_height = (bottom + MARGIN).clamp(300.0, 1000.0);
@@ -452,6 +489,11 @@ impl eframe::App for App {
 
         self.save_if_changed();
     }
+}
+
+/// This PC shares its keyboard and mouse (and the build can).
+pub fn shares_input(cfg: &Config, attached: &Attached) -> bool {
+    crate::input::available() && cfg.share_input.unwrap_or(attached.suggests_sharing())
 }
 
 /// Apply the sharing settings: keyboard and mouse hooks on or off, and which
@@ -556,7 +598,7 @@ fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
 /// A ‹ or › button that pages the layout row. Its space is kept even when hidden,
 /// so the row never shifts.
 fn arrow(ui: &mut Ui, width: f32, glyph: &str, enabled: bool) -> bool {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 84.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 84.0 + BADGE_ROOM), Sense::click());
     if !enabled {
         return false;
     }
@@ -567,16 +609,18 @@ fn arrow(ui: &mut Ui, width: f32, glyph: &str, enabled: bool) -> bool {
 
 /// One screen in the layout row: this PC, a placed PC, or an empty side.
 fn screen_slot(ui: &mut Ui, size: Vec2, slot: &Slot) {
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let painter = ui.painter_at(rect);
+    let (area, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter_at(area);
+    // The card sits below a strip of room for the badge, which overlaps its top edge.
+    let rect = Rect::from_min_max(Pos2::new(area.left(), area.top() + BADGE_ROOM), area.max);
     let v = ui.visuals();
     let accent = v.selection.bg_fill;
     let weak = muted(ui);
 
-    let (name, me, side, online) = match slot {
-        Slot::Me(n) => (Some(n.as_str()), true, "", true),
-        Slot::Peer(n, side, online) => (Some(n.as_str()), false, *side, *online),
-        Slot::Empty(side) => (None, false, *side, false),
+    let (name, me, side, online, badge, used) = match slot {
+        Slot::Me(n, badge, used) => (Some(n.as_str()), true, "", true, *badge, *used),
+        Slot::Peer(n, side, online, badge, used) => (Some(n.as_str()), false, *side, *online, *badge, *used),
+        Slot::Empty(side) => (None, false, *side, false, None, false),
     };
     match name {
         Some(name) => {
@@ -592,10 +636,11 @@ fn screen_slot(ui: &mut Ui, size: Vec2, slot: &Slot) {
                 egui::FontId::proportional(font_size),
                 v.strong_text_color(),
             );
-            let sub = match (me, online) {
-                (true, _) => "this PC".to_string(),
-                (false, true) => format!("{side} side"),
-                (false, false) => format!("{side} · offline"),
+            let sub = match (me, online, used) {
+                (_, _, true) => "in use".to_string(),
+                (true, _, _) => "this PC".to_string(),
+                (false, true, _) => format!("{side} side"),
+                (false, false, _) => format!("{side} · offline"),
             };
             painter.text(
                 Pos2::new(rect.center().x, rect.top() + 67.0),
@@ -604,6 +649,9 @@ fn screen_slot(ui: &mut Ui, size: Vec2, slot: &Slot) {
                 egui::FontId::proportional(12.0),
                 weak,
             );
+            if let Some(badge) = badge {
+                draw_badge(&painter, Pos2::new(rect.center().x, rect.top() + 1.0), badge);
+            }
         }
         None => {
             dashed_rect(&painter, rect.shrink(1.5), weak);
@@ -623,6 +671,87 @@ fn screen_slot(ui: &mut Ui, size: Vec2, slot: &Slot) {
             );
         }
     }
+}
+
+const REPO_URL: &str = "https://github.com/saugatadatta/HomeKVM";
+
+/// Two lines on the left (version, this PC's ID) and the about badge on the right,
+/// the same height as the two lines.
+fn footer(ui: &mut Ui, my_id: &str) {
+    let muted = muted(ui);
+    let line = 15.0;
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(
+                RichText::new(format!("HomeKVM {} · encrypted, paired PCs only", env!("CARGO_PKG_VERSION")))
+                    .size(12.0)
+                    .color(muted),
+            );
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(RichText::new("This PC's ID:").size(12.0).color(muted));
+                ui.label(RichText::new(my_id).size(12.0).monospace().color(muted));
+            });
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            about_badge(ui, 2.0 * line + 4.0);
+        });
+    });
+}
+
+/// "by Saugata Datta" over "View on GitHub ↗" in a soft blue box; opens the repo.
+fn about_badge(ui: &mut Ui, height: f32) {
+    let blue = Color32::from_rgb(47, 129, 247);
+    let text = if ui.visuals().dark_mode { Color32::from_rgb(207, 226, 255) } else { Color32::from_rgb(20, 70, 150) };
+    let font = egui::FontId::proportional(11.5);
+    let top = ui.painter().layout_no_wrap("by Saugata Datta".to_owned(), font.clone(), text);
+    let bottom = ui.painter().layout_no_wrap("View on GitHub ↗".to_owned(), font, text);
+    let (icon, pad, gap) = (12.0, 9.0, 7.0);
+    let width = pad + icon + gap + top.size().x.max(bottom.size().x) + pad;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    let response = response.on_hover_text(REPO_URL).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(REPO_URL));
+    }
+    let p = ui.painter();
+    let fill = if response.hovered() { blue.gamma_multiply(0.30) } else { blue.gamma_multiply(0.16) };
+    p.rect(rect, 8.0, fill, Stroke::new(1.0_f32, blue.gamma_multiply(0.6)));
+    // A small "code" glyph: </>
+    let c = Pos2::new(rect.left() + pad + icon / 2.0, rect.center().y);
+    let s = Stroke::new(1.3_f32, text);
+    p.line_segment([Pos2::new(c.x - 2.5, c.y - 4.0), Pos2::new(c.x - 6.0, c.y)], s);
+    p.line_segment([Pos2::new(c.x - 6.0, c.y), Pos2::new(c.x - 2.5, c.y + 4.0)], s);
+    p.line_segment([Pos2::new(c.x + 2.5, c.y - 4.0), Pos2::new(c.x + 6.0, c.y)], s);
+    p.line_segment([Pos2::new(c.x + 6.0, c.y), Pos2::new(c.x + 2.5, c.y + 4.0)], s);
+    p.line_segment([Pos2::new(c.x + 1.0, c.y - 5.0), Pos2::new(c.x - 1.0, c.y + 5.0)], s);
+    let x = rect.left() + pad + icon + gap;
+    let (h1, h2) = (top.size().y, bottom.size().y);
+    let y0 = rect.center().y - (h1 + h2 + 1.0) / 2.0;
+    p.galley(Pos2::new(x, y0), top, text);
+    p.galley(Pos2::new(x, y0 + h1 + 1.0), bottom, text);
+}
+
+/// A small blue pill with a keyboard glyph: "Server" or "Server · in use".
+fn draw_badge(p: &egui::Painter, center: Pos2, badge: Badge) {
+    let text = match badge {
+        Badge::Server => "Server",
+        Badge::InUse => "Server · in use",
+    };
+    let white = Color32::WHITE;
+    let galley = p.layout_no_wrap(text.to_owned(), egui::FontId::proportional(11.0), white);
+    let (icon_w, pad, gap, h) = (11.0, 8.0, 4.0, 18.0);
+    let w = pad + icon_w + gap + galley.size().x + pad;
+    let pill = Rect::from_center_size(center, Vec2::new(w, h));
+    p.rect_filled(pill, h / 2.0, Color32::from_rgb(47, 129, 247));
+    // Keyboard glyph: an outline with a space bar.
+    let key = Rect::from_min_size(Pos2::new(pill.left() + pad, pill.center().y - 3.5), Vec2::new(icon_w, 7.0));
+    p.rect_stroke(key, 1.5, Stroke::new(1.0_f32, white));
+    p.line_segment(
+        [Pos2::new(key.left() + 3.0, key.bottom() - 2.0), Pos2::new(key.right() - 3.0, key.bottom() - 2.0)],
+        Stroke::new(1.0_f32, white),
+    );
+    p.galley(Pos2::new(key.right() + gap, pill.center().y - galley.size().y / 2.0), galley, white);
 }
 
 fn draw_monitor(p: &egui::Painter, c: Pos2, color: Color32) {
