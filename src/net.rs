@@ -11,6 +11,8 @@
 //!   so the mouse can move along the row of PCs or come home.
 //! - Shared clipboard: a copy made on this PC goes to every connected paired PC
 //!   (see clipboard.rs); copies from them replace this PC's clipboard.
+//! - Files: only the list travels with a copy. When another PC pastes, it asks for
+//!   each file on a new stream and this PC streams it from disk (see vfiles.rs).
 //!
 //! Runs on its own thread with a small single-threaded async runtime.
 
@@ -53,6 +55,105 @@ pub enum Cmd {
     Forget(String),
     Rename(String),
     ClearNotice,
+}
+
+/// Pieces of a file fetched from another PC for a paste.
+pub enum FetchMsg {
+    Size(u64),
+    Data(Vec<u8>),
+    Done,
+    Failed(String),
+}
+
+/// The running network side, for fetches started from the clipboard thread.
+static RUNNING: std::sync::OnceLock<(Arc<Net>, tokio::runtime::Handle)> = std::sync::OnceLock::new();
+
+/// Fetch file `index` of copy `offer` from the paired PC `from`. Read the pieces with
+/// `blocking_recv` (from a normal thread).
+pub fn fetch(from: &str, offer: u64, index: usize) -> tokio::sync::mpsc::Receiver<FetchMsg> {
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let Some((net, handle)) = RUNNING.get() else {
+        let _ = tx.try_send(FetchMsg::Failed("not running".into()));
+        return rx;
+    };
+    let conn = net.lock().peers.get(from).filter(|p| p.paired).and_then(|p| p.link.as_ref()).map(|l| l.conn.clone());
+    match conn {
+        Some(conn) => {
+            handle.spawn(fetch_file(conn, offer, index as u32, tx));
+        }
+        None => {
+            let _ = tx.try_send(FetchMsg::Failed("that PC isn't connected".into()));
+        }
+    }
+    rx
+}
+
+async fn fetch_file(conn: quinn::Connection, offer: u64, index: u32, tx: tokio::sync::mpsc::Sender<FetchMsg>) {
+    let result: Result<(), String> = async {
+        let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+        proto::write_fetch(&mut send, &proto::FetchRequest { offer, index }).await?;
+        let _ = send.finish();
+        let mut size = [0u8; 8];
+        recv.read_exact(&mut size).await.map_err(|e| e.to_string())?;
+        let size = u64::from_be_bytes(size);
+        if size == proto::NOT_OFFERED {
+            return Err("those files are no longer on the clipboard".into());
+        }
+        tx.send(FetchMsg::Size(size)).await.map_err(|e| e.to_string())?;
+        let mut left = size;
+        let mut buf = vec![0u8; 256 * 1024];
+        while left > 0 {
+            let want = buf.len().min(left as usize);
+            let n = recv.read(&mut buf[..want]).await.map_err(|e| e.to_string())?.ok_or("file ended early")?;
+            tx.send(FetchMsg::Data(buf[..n].to_vec())).await.map_err(|e| e.to_string())?;
+            left -= n as u64;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = tx.send(match result {
+        Ok(()) => FetchMsg::Done,
+        Err(e) => FetchMsg::Failed(e),
+    })
+    .await;
+}
+
+/// Another PC is pasting files copied here: stream the requested file from disk.
+async fn serve_file(net: Arc<Net>, id: String, mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
+    use tokio::io::AsyncReadExt;
+    let Ok(req) = proto::read_fetch(&mut recv).await else { return };
+    let trusted = net.lock().peers.get(&id).is_some_and(|p| p.paired);
+    let path = if trusted { clipboard::offered_file(req.offer, req.index as usize) } else { None };
+    let file = match path {
+        Some(p) => tokio::fs::File::open(p).await.ok(),
+        None => None,
+    };
+    let Some(mut file) = file else {
+        let _ = send.write_all(&proto::NOT_OFFERED.to_be_bytes()).await;
+        let _ = send.finish();
+        return;
+    };
+    let size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    if send.write_all(&size.to_be_bytes()).await.is_err() {
+        return;
+    }
+    let mut left = size;
+    let mut buf = vec![0u8; 256 * 1024];
+    while left > 0 {
+        let want = buf.len().min(left as usize);
+        match file.read(&mut buf[..want]).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if send.write_all(&buf[..n]).await.is_err() {
+                    return;
+                }
+                left -= n as u64;
+            }
+        }
+    }
+    let _ = send.finish();
+    let _ = tokio::time::timeout(Duration::from_secs(30), send.stopped()).await;
+    dlog!("served file {} of copy {} to {}", req.index, req.offer, identity::short(&id));
 }
 
 #[derive(Clone)]
@@ -313,6 +414,7 @@ async fn run(
         inner.peers.insert(p.id, Peer { name: p.name, paired: true, ..Default::default() });
     }
     let net = Arc::new(Net { me: me.id.clone(), endpoint, shared, on_change, inner: Mutex::new(inner) });
+    let _ = RUNNING.set((net.clone(), tokio::runtime::Handle::current()));
     net.publish();
 
     // Announce this PC and watch for others.
@@ -620,12 +722,13 @@ async fn run_link(net: Arc<Net>, conn: quinn::Connection, dialed: bool) {
                 match result {
                     Ok(clip) if trusted => {
                         dlog!(
-                            "clipboard from {}: text {}, image {} bytes",
+                            "clipboard from {}: text {}, image {} bytes, {} files",
                             identity::short(&id),
                             clip.text.as_ref().map_or(0, |t| t.len()),
-                            clip.image.as_ref().map_or(0, |i| i.len())
+                            clip.image.as_ref().map_or(0, |i| i.len()),
+                            clip.files.as_ref().map_or(0, |f| f.entries.len())
                         );
-                        clipboard::apply(clip);
+                        clipboard::apply(clip, id.clone());
                     }
                     Ok(_) => {}
                     Err(e) => dlog!("clipboard from {}: {e}", identity::short(&id)),
@@ -634,10 +737,21 @@ async fn run_link(net: Arc<Net>, conn: quinn::Connection, dialed: bool) {
         })
     };
 
+    // File requests (pastes on that PC) arrive on new two-way streams.
+    let file_server = {
+        let (net, conn, id) = (net.clone(), conn.clone(), id.clone());
+        tokio::spawn(async move {
+            while let Ok((send, recv)) = conn.accept_bi().await {
+                tokio::spawn(serve_file(net.clone(), id.clone(), send, recv));
+            }
+        })
+    };
+
     while let Ok(msg) = proto::read(&mut recv).await {
         on_message(&net, &id, &conn, msg);
     }
 
+    file_server.abort();
     clip_reader.abort();
     writer.abort();
     dlog!("link down with {}", identity::short(&id));

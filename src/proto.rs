@@ -1,7 +1,7 @@
 //! Messages between two HomeKVM PCs on the control stream: a 4-byte length and
 //! then JSON. Small and easy to read while the protocol grows.
 
-use crate::clipboard::{Clip, MAX_IMAGE, MAX_TEXT};
+use crate::clipboard::{Clip, FileList, MAX_IMAGE, MAX_TEXT};
 use serde::{Deserialize, Serialize};
 
 const MAX_MESSAGE: usize = 64 * 1024;
@@ -55,13 +55,20 @@ pub enum Edge {
 struct ClipHeader {
     text: u64,
     image: u64,
+    /// Copied files: just the list; the data moves only when another PC pastes.
+    #[serde(default)]
+    files: Option<FileList>,
 }
+
+/// A file list with many entries makes a large header.
+const MAX_CLIP_HEADER: usize = 8 * 1024 * 1024;
 
 pub async fn send_clip(conn: &quinn::Connection, clip: &Clip) -> Result<(), String> {
     let text = clip.text.as_deref().unwrap_or("").as_bytes();
     let image = clip.image.as_deref().unwrap_or(&[]);
-    let header = serde_json::to_vec(&ClipHeader { text: text.len() as u64, image: image.len() as u64 })
-        .map_err(|e| e.to_string())?;
+    let header =
+        serde_json::to_vec(&ClipHeader { text: text.len() as u64, image: image.len() as u64, files: clip.files.clone() })
+            .map_err(|e| e.to_string())?;
     let mut s = conn.open_uni().await.map_err(|e| e.to_string())?;
     s.write_all(&(header.len() as u32).to_be_bytes()).await.map_err(|e| e.to_string())?;
     s.write_all(&header).await.map_err(|e| e.to_string())?;
@@ -77,7 +84,7 @@ pub async fn read_clip(stream: &mut quinn::RecvStream) -> Result<Clip, String> {
     let mut len = [0u8; 4];
     stream.read_exact(&mut len).await.map_err(|e| e.to_string())?;
     let len = u32::from_be_bytes(len) as usize;
-    if len > MAX_MESSAGE {
+    if len > MAX_CLIP_HEADER {
         return Err("header too large".into());
     }
     let mut header = vec![0u8; len];
@@ -93,7 +100,36 @@ pub async fn read_clip(stream: &mut quinn::RecvStream) -> Result<Clip, String> {
     Ok(Clip {
         text: (!text.is_empty()).then(|| String::from_utf8_lossy(&text).into_owned()),
         image: (!image.is_empty()).then_some(image),
+        files: header.files,
     })
+}
+
+/// A paste asking for one file of a copy: sent on a new two-way stream. The answer is
+/// the file size as 8 bytes (u64::MAX if it's no longer on offer), then the data.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FetchRequest {
+    pub offer: u64,
+    pub index: u32,
+}
+
+pub const NOT_OFFERED: u64 = u64::MAX;
+
+pub async fn write_fetch(stream: &mut quinn::SendStream, req: &FetchRequest) -> Result<(), String> {
+    let body = serde_json::to_vec(req).map_err(|e| e.to_string())?;
+    stream.write_all(&(body.len() as u32).to_be_bytes()).await.map_err(|e| e.to_string())?;
+    stream.write_all(&body).await.map_err(|e| e.to_string())
+}
+
+pub async fn read_fetch(stream: &mut quinn::RecvStream) -> Result<FetchRequest, String> {
+    let mut len = [0u8; 4];
+    stream.read_exact(&mut len).await.map_err(|e| e.to_string())?;
+    let len = u32::from_be_bytes(len) as usize;
+    if len > MAX_MESSAGE {
+        return Err("request too large".into());
+    }
+    let mut body = vec![0u8; len];
+    stream.read_exact(&mut body).await.map_err(|e| e.to_string())?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
 }
 
 pub async fn write(stream: &mut quinn::SendStream, msg: &Msg) -> Result<(), String> {

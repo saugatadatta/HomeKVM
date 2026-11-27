@@ -1,12 +1,17 @@
-# HomeKVM — plan (draft, awaiting approval)
+# HomeKVM — plan
 
 One small Rust app, the same on every computer. Use one keyboard and mouse across
 computers on your home network, share the clipboard, and copy files by copy and paste.
 
+## Goal
+- **Windows only** (Windows 10 and 11). No macOS or Linux versions are planned.
+- **A signed app:** HomeKVM.exe is code-signed so Windows trusts it, with no SmartScreen
+  "unknown publisher" warning. Signing should cost nothing (see "Code signing").
+
 ## Principles
 - Simple: one window, one list of devices, one row of screens. No server, no account, no cloud.
 - Runs as you, never as admin: no service and no driver. Start-at-login uses
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (or the equivalent on macOS and Linux).
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Secure by default: only devices you pair can connect. Everything is encrypted.
 - Fails safe: if a connection drops, the keyboard and mouse come straight back to the local PC.
   A hotkey (Ctrl+Alt+Home) always returns them too.
@@ -55,8 +60,7 @@ controlled by another PC, so you choose the server by choosing where you sit.
 | Network | QUIC (`quinn`) with TLS 1.3 (`rustls`). Mouse moves use unreliable datagrams for low lag; keys, clipboard and files use reliable streams |
 | Identity | Each install makes its own key and self-signed certificate. A device is paired by pinning its certificate fingerprint |
 | Discovery | mDNS on the local network (`mdns-sd`); IP can also be typed by hand |
-| Input (Windows) | Low-level keyboard and mouse hooks to capture; `SendInput` to replay |
-| Input (macOS / Linux) | CGEventTap with the Accessibility permission / X11 or libei (later phase) |
+| Input | Low-level keyboard and mouse hooks to capture; `SendInput` to replay |
 | Clipboard | `arboard` for text and images; Windows file lists (CF_HDROP) for files |
 | Config | TOML in `%APPDATA%\HomeKVM` |
 
@@ -112,10 +116,32 @@ Paste, in any app.
 3. Mouse and keyboard sharing on Windows, with left/right edges and the return hotkey.
 4. Shared clipboard: text and images (last copy wins, both ways).
 5. Files and folders through the same shared clipboard, with progress.
-6. macOS and Linux.
-7. Installer or portable zip, plus code signing.
+6. Releases and code signing (see below).
 
-## Risk: antivirus and EDR
+## Code signing (free)
+Unsigned, HomeKVM.exe shows a SmartScreen warning ("Windows protected your PC") and is more
+likely to be flagged by antivirus, because keyboard hooks and input injection look like a
+keylogger to heuristics. A signature fixes the warning over time and shows who published it.
+
+| Option | Cost | Notes |
+|---|---|---|
+| **SignPath Foundation** (chosen) | Free for open source | Signs release builds made by GitHub Actions, with a certificate held in their hardware module. Needs a public repo, an OSI-approved license, and an application that they review. The publisher shown is SignPath Foundation, with HomeKVM as the product. |
+| Microsoft Store (MSIX) | Free (individual developer account) | The Store signs the package and handles updates. Needs MSIX packaging, Start at sign-in through the package's StartupTask, and Store certification, which will ask why the app uses keyboard hooks. A good second channel later. |
+| Azure Trusted Signing | About $10 a month | Not free. |
+| Certum open-source certificate | Paid yearly, plus identity checks | Not free. |
+| Self-signed certificate | Free | Doesn't help: Windows doesn't trust it. |
+
+Steps:
+1. Add an OSI-approved license (MIT suggested) and keep the repo public. *(Repo made public
+   on 2026-11-27.)*
+2. Publish versioned releases from GitHub Actions: a tag like `v0.5.0` builds the exe and
+   attaches it to a GitHub Release.
+3. Apply to SignPath Foundation with the repo, license and release.
+4. Once approved, add the SignPath step to the release workflow, so tagged builds are signed
+   before they're attached to the Release. Only CI builds get signed, never local ones.
+5. Later, optionally: an MSIX package for the Microsoft Store.
+
+## Risk: antivirus false positives
 Global keyboard hooks, input injection, start-at-login and network traffic in one unsigned
-exe look like a keylogger to Defender and corporate EDR. Do not build or run phase 3 and later
-on a corporate-managed PC. Develop and test on personal machines. For wider use, sign the exe.
+exe can look like a keylogger to antivirus heuristics. Signing the exe (see "Code signing")
+is the main fix. Builds without the `input` feature leave out the hooks and injection.

@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(not(windows))]
-compile_error!("HomeKVM currently supports Windows only; macOS and Linux come in a later phase.");
+compile_error!("HomeKVM is a Windows app.");
 
 mod autostart;
 mod clipboard;
@@ -20,6 +20,7 @@ mod proto;
 mod state;
 mod tls;
 mod tray;
+mod vfiles;
 mod ui;
 mod win;
 

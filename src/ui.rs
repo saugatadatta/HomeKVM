@@ -459,7 +459,7 @@ impl eframe::App for App {
 pub fn apply_settings(cfg: &Config, attached: &Attached) {
     crate::input::set_enabled(cfg.share_input.unwrap_or(attached.suggests_sharing()));
     crate::input::set_edge_delay(cfg.edge_delay);
-    crate::clipboard::set_options(cfg.clipboard_text, cfg.clipboard_images);
+    crate::clipboard::set_options(cfg.clipboard_text, cfg.clipboard_images, cfg.send_files, cfg.real_file_limit_mb);
 }
 
 /// Dev builds only: HOMEKVM_DEMO=1 fills the screen row with sample PCs.

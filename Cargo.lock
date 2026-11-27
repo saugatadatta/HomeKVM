@@ -1819,7 +1819,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "homekvm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "embed-resource",
@@ -1834,6 +1834,8 @@ dependencies = [
  "tokio",
  "toml",
  "tray-icon",
+ "windows 0.58.0",
+ "windows-core 0.58.0",
  "windows-sys 0.59.0",
  "winreg",
 ]
@@ -3863,6 +3865,7 @@ version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",
