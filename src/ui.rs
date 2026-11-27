@@ -367,6 +367,7 @@ impl App {
     }
 
     fn settings_section(&mut self, ui: &mut Ui) {
+        let update_status = self.shared.update_status();
         let c = &mut self.cfg;
         section(ui, "Settings", |ui| {
             setting_row(ui, "Share clipboard text", "Copy here, paste there", &mut c.clipboard_text);
@@ -398,6 +399,21 @@ impl App {
                     .size(12.0)
                     .color(muted(ui)),
                 );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Updates");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Check now").clicked() {
+                            crate::update::check_now();
+                        }
+                    });
+                });
+                let status = if update_status.is_empty() {
+                    format!("Version {} · installed automatically from GitHub Releases", env!("CARGO_PKG_VERSION"))
+                } else {
+                    update_status
+                };
+                ui.label(RichText::new(status).size(12.0).color(muted(ui)));
             });
         });
     }

@@ -15,19 +15,53 @@ Already in place in this repo:
   variable `SIGNPATH_ORGANIZATION_ID` exists; until then, releases are published unsigned.
 
 ## 1. Apply (once)
-1. Go to [signpath.org](https://signpath.org) and open the application for free code signing
-   for open-source projects.
-2. Describe the project:
-   - **Name:** HomeKVM
-   - **Repository:** https://github.com/saugatadatta/HomeKVM
-   - **License:** MIT
-   - **What it does:** shares one keyboard and mouse across Windows PCs on a home network,
-     with a shared clipboard and file paste. It uses low-level keyboard and mouse hooks
-     (on the PC you're using) and `SendInput` (on the PC being controlled) for that, only
-     between PCs the user pairs with a 6-digit code, over encrypted QUIC.
-   - **Releases:** https://github.com/saugatadatta/HomeKVM/releases
-   - **Maintainer:** Saugata Datta
-3. Wait for their review. SignPath may ask questions, for example about the input hooks.
+Go to [signpath.org](https://signpath.org), open the application for free code signing for
+open-source projects, and fill it in with these answers:
+
+| Field | Answer |
+|---|---|
+| **Project Name** | HomeKVM |
+| **Repository URL** | https://github.com/saugatadatta/HomeKVM |
+| **Homepage URL** | https://github.com/saugatadatta/HomeKVM |
+| **Download URL** | https://github.com/saugatadatta/HomeKVM#download (the README's Download section, right above the code signing policy, mentions SignPath. Release notes mention it from 0.7.0 on.) |
+| **Privacy Policy URL** | https://github.com/saugatadatta/HomeKVM#privacy |
+| **Wikipedia URL** | *(leave empty)* |
+| **Tagline** | One keyboard and mouse across your Windows PCs, with a shared clipboard and copy-and-paste file transfer. |
+| **Category** | Utilities / system tools (pick the closest one on the form) |
+| **Description** | See below. |
+| **Reputation** | See below. |
+| **Maintainer Type** | Individual |
+| **Build System** | GitHub Actions |
+| **First Name** | Saugata |
+| **Last Name** | Datta |
+| **Email** | Your personal email. It isn't written here because this file is public. |
+| **Company Name** | *(leave empty: personal project)* |
+| **Primary Discovery Channel** | AI assistant (or "Other") |
+| **Exact source** | Claude Code (Anthropic), while setting up code signing for this project |
+
+**Description:**
+> HomeKVM lets you use one keyboard and mouse across several Windows PCs on your home
+> network, like a software KVM switch. Move the mouse past a screen edge and it continues on
+> the PC placed there. The PCs share one clipboard for text, images and files: copy on one PC,
+> paste on another, and files only transfer when you paste. It's a single small app that runs
+> in the tray without admin rights. PCs pair with a 6-digit code and talk only to each other,
+> over an encrypted connection. To share the keyboard and mouse, it uses Windows' low-level
+> keyboard and mouse hooks on the PC you're using and replays the input on the paired PC with
+> SendInput.
+
+**Reputation** (be honest: it's a new project):
+> HomeKVM is a new open-source project (MIT), started in November 2026 as a simpler
+> alternative to PowerToys Mouse Without Borders. Development is public on GitHub, and every
+> release is built by GitHub Actions from tagged source. Release downloads and GitHub insights
+> are on the repository: https://github.com/saugatadatta/HomeKVM/releases and
+> https://github.com/saugatadatta/HomeKVM/pulse
+
+SignPath Foundation looks for some adoption, so a brand-new project may be asked to come
+back later. Stars, downloads and issues on GitHub help. If they decline for now, apply again
+once there's more use.
+
+After submitting, wait for their review. SignPath may ask questions, for example about the
+input hooks.
 
 ## 2. Set up SignPath (after approval)
 Names in SignPath's web app may differ slightly from these.

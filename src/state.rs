@@ -111,6 +111,8 @@ pub struct Shared {
     paused: AtomicBool,
     net: Mutex<NetView>,
     layout: Mutex<Layout>,
+    /// What the updater is doing, for Settings.
+    update_status: Mutex<String>,
 }
 
 impl Shared {
@@ -121,6 +123,16 @@ impl Shared {
     pub fn set_net(&self, view: NetView) {
         if let Ok(mut v) = self.net.lock() {
             *v = view;
+        }
+    }
+
+    pub fn update_status(&self) -> String {
+        self.update_status.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    pub fn set_update_status(&self, text: String) {
+        if let Ok(mut s) = self.update_status.lock() {
+            *s = text;
         }
     }
 

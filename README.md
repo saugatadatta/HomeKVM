@@ -44,9 +44,14 @@ Get `HomeKVM.exe` from [Releases](https://github.com/saugatadatta/HomeKVM/releas
 It's a single file: run it on each PC. Every release is built from this repo by GitHub
 Actions.
 
-Releases aren't code-signed yet, so Windows SmartScreen shows a warning the first time
-(More info, then Run anyway). Keyboard and mouse sharing uses global input hooks and input
-injection, which antivirus heuristics can mistake for a keylogger until the app is signed.
+HomeKVM uses [SignPath Foundation](https://signpath.org) for free code signing (applied for;
+see the code signing policy below). Until then, releases aren't signed, so Windows SmartScreen
+shows a warning the first time (More info, then Run anyway). Keyboard and mouse sharing uses
+global input hooks and input injection, which antivirus heuristics can mistake for a keylogger
+until the app is signed.
+
+From 0.7.0 on, HomeKVM updates itself from these releases: it checks once a day, verifies the
+download, swaps in the new version and restarts.
 
 ## Code signing policy
 Free code signing provided by [SignPath.io](https://signpath.io), certificate by
@@ -60,8 +65,10 @@ approved.)*
 - Approvers: [Saugata Datta](https://github.com/saugatadatta)
 
 ## Privacy
-HomeKVM has no accounts, no cloud service and no telemetry. It doesn't contact any server on
-the internet. On your local network it does the following:
+HomeKVM has no accounts, no cloud service and no telemetry. The only internet request is the
+update check: once a day it asks GitHub (`api.github.com`) for the latest HomeKVM release and,
+when there's a newer one, downloads it from GitHub. Nothing about you or your PCs is sent. On
+your local network it does the following:
 - It announces this PC's name and HomeKVM ID with mDNS, so your other PCs can find it.
 - It talks only to PCs you've paired with a 6-digit code, over an encrypted connection
   (QUIC with TLS 1.3).

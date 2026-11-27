@@ -63,6 +63,21 @@ impl TrayHandle {
     }
 }
 
+/// Message that makes the tray thread remove the icon and end HomeKVM.
+const WM_QUIT_APP: u32 = WM_APP + 7;
+static TRAY_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// End HomeKVM cleanly (used after installing an update).
+pub fn quit() {
+    let id = TRAY_THREAD.load(std::sync::atomic::Ordering::SeqCst);
+    if id == 0 {
+        std::process::exit(0);
+    }
+    unsafe {
+        PostThreadMessageW(id, WM_QUIT_APP, 0, 0);
+    }
+}
+
 pub fn spawn(shared: Arc<Shared>) -> TrayHandle {
     let (tx, rx) = channel();
     let (id_tx, id_rx) = channel();
@@ -92,6 +107,7 @@ fn run(shared: Arc<Shared>, rx: Receiver<()>, id_tx: Sender<u32>) {
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         PeekMessageW(&mut msg, std::ptr::null_mut(), WM_USER, WM_USER, PM_NOREMOVE);
+        TRAY_THREAD.store(GetCurrentThreadId(), std::sync::atomic::Ordering::SeqCst);
         let _ = id_tx.send(GetCurrentThreadId());
     }
 
@@ -100,6 +116,10 @@ fn run(shared: Arc<Shared>, rx: Receiver<()>, id_tx: Sender<u32>) {
             let mut msg: MSG = std::mem::zeroed();
             if GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) <= 0 {
                 break;
+            }
+            if msg.message == WM_QUIT_APP {
+                drop(tray);
+                std::process::exit(0);
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

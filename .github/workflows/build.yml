@@ -87,6 +87,8 @@ jobs:
         run: |
           # The signed exe when signing ran, otherwise the unsigned build.
           $exe = if (Test-Path signed/HomeKVM.exe) { "signed/HomeKVM.exe" } else { "target/release/HomeKVM.exe" }
-          gh release create "${{ github.ref_name }}" $exe `
+          # The app's updater checks downloads against this.
+          (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() | Set-Content HomeKVM.exe.sha256 -NoNewline
+          gh release create "${{ github.ref_name }}" $exe HomeKVM.exe.sha256 `
             --title "HomeKVM ${{ github.ref_name }}" `
             --notes-file .github/release-notes.md

@@ -22,6 +22,7 @@ mod tls;
 mod tray;
 mod vfiles;
 mod ui;
+mod update;
 mod win;
 
 use std::sync::Arc;
@@ -30,7 +31,17 @@ pub const WINDOW_WIDTH: f32 = 440.0;
 
 fn main() {
     // One copy per user session. Starting it again opens the running copy's window.
-    if !win::acquire_single_instance() {
+    // Right after an update, the previous version is still closing: wait for it.
+    let after_update = std::env::args().any(|a| a == update::AFTER_UPDATE);
+    let mut first = win::acquire_single_instance();
+    for _ in 0..(if after_update { 100 } else { 0 }) {
+        if first {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        first = win::acquire_single_instance();
+    }
+    if !first {
         win::signal_running_instance();
         return;
     }
@@ -53,7 +64,8 @@ fn main() {
             tray.refresh();
         })
     };
-    let net = net::start(shared.clone(), cfg.device_name.clone(), on_change);
+    let net = net::start(shared.clone(), cfg.device_name.clone(), on_change.clone());
+    update::start(shared.clone(), on_change);
     // Sharing follows the settings from the start, even before the window opens.
     let attached = devices::scan();
     ui::apply_settings(&cfg, &attached);
