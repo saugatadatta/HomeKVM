@@ -60,3 +60,7 @@ icon to open the window. Closing the window keeps it in the tray. Quit from the 
 Development builds (`cargo run`) never register themselves to start at sign-in.
 For development, `HOMEKVM_PROFILE=b` runs a second, separate copy on the same PC (debug
 builds only).
+
+## License
+MIT. See [LICENSE](LICENSE).
+

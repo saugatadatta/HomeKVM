@@ -3,6 +3,7 @@ name = "homekvm"
 version = "0.5.0"
 edition = "2021"
 description = "Share one keyboard and mouse, the clipboard and files across your home PCs"
+license = "MIT"
 publish = false
 
 [[bin]]

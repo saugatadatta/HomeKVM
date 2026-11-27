@@ -132,8 +132,7 @@ keylogger to heuristics. A signature fixes the warning over time and shows who p
 | Self-signed certificate | Free | Doesn't help: Windows doesn't trust it. |
 
 Steps:
-1. Add an OSI-approved license (MIT suggested) and keep the repo public. *(Repo made public
-   on 2026-11-27.)*
+1. Add an OSI-approved license and keep the repo public. *(Done 2026-11-27: MIT, repo public.)*
 2. Publish versioned releases from GitHub Actions: a tag like `v0.5.0` builds the exe and
    attaches it to a GitHub Release.
 3. Apply to SignPath Foundation with the repo, license and release.
