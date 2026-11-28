@@ -3,6 +3,17 @@
 What changed in each HomeKVM version. Every release on GitHub shows its section from
 this file, and a release build stops if the new version has no section here yet.
 
+## [0.10.3]
+
+### Added
+- The window flies out of the tray icon when it opens, slowing down as it reaches the
+  center and fading in, and flies back toward the tray when you close it. With Windows'
+  **Animation effects** turned off, it just appears and disappears.
+
+### Fixed
+- No white flash when the window opens: it stays fully transparent until it has been
+  drawn.
+
 ## [0.10.2]
 
 ### Fixed

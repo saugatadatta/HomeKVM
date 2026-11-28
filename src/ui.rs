@@ -241,9 +241,10 @@ impl App {
         // to the tray every time, not only the first time.
         if close {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            crate::win::hide_main_window();
+            crate::win::hide_main_window(true);
         } else if minimized {
-            crate::win::hide_main_window();
+            // Windows already animated it down to the taskbar.
+            crate::win::hide_main_window(false);
         }
     }
 
@@ -896,7 +897,8 @@ impl eframe::App for App {
         }
         if crate::win::reveal_pending() {
             self.fit_frames += 1;
-            if fits || self.fit_frames > 8 {
+            // Wait for a frame at the final size to be drawn, so it never appears empty.
+            if (fits && self.fit_frames >= 2) || self.fit_frames > 8 {
                 crate::win::reveal();
                 self.fit_frames = 0;
             } else {

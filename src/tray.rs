@@ -127,6 +127,21 @@ fn run(shared: Arc<Shared>, rx: Receiver<()>, id_tx: Sender<u32>) {
 
         let mut changed = false;
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            // Where the icon is: the window flies out of it and back into it.
+            let rect = match &event {
+                TrayIconEvent::Click { rect, .. }
+                | TrayIconEvent::DoubleClick { rect, .. }
+                | TrayIconEvent::Enter { rect, .. }
+                | TrayIconEvent::Move { rect, .. }
+                | TrayIconEvent::Leave { rect, .. } => Some(*rect),
+                _ => None,
+            };
+            if let Some(r) = rect {
+                win::set_tray_point(
+                    (r.position.x + r.size.width as f64 / 2.0) as i32,
+                    (r.position.y + r.size.height as f64 / 2.0) as i32,
+                );
+            }
             match event {
                 TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }
                 | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => win::show_main_window(),
