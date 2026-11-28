@@ -2,7 +2,7 @@
 //! from the tray thread (a hidden eframe window gets no frames, so it can't show itself).
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{
@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible,
     SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, ShowWindowAsync,
-    SystemParametersInfoW, ASFW_ANY, GWL_EXSTYLE, LWA_ALPHA, SPI_GETCLIENTAREAANIMATION, SWP_ASYNCWINDOWPOS,
+    SystemParametersInfoW, ASFW_ANY, GWL_EXSTYLE, LWA_ALPHA, SPI_GETCLIENTAREAANIMATION,
     SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNORMAL, WS_EX_LAYERED,
 };
 
@@ -29,20 +29,17 @@ static REVEAL_PENDING: AtomicBool = AtomicBool::new(false);
 /// Just started: the window stays in the tray until eframe has shown it once (see
 /// `settle_startup`).
 static STARTING: AtomicBool = AtomicBool::new(false);
-/// The middle of the tray icon on screen (physical pixels), once the tray has said.
-static TRAY_X: AtomicI32 = AtomicI32::new(i32::MIN);
-static TRAY_Y: AtomicI32 = AtomicI32::new(i32::MIN);
-/// Counts window animations; a newer one stops an older one.
+/// Opening, the window is first put in place while still invisible; it fades in the frame
+/// after, so nothing ever shows anywhere else.
+static REVEAL_PLACED: AtomicBool = AtomicBool::new(false);
+/// Counts window fades; a newer one stops an older one.
 static ANIMATION: AtomicU64 = AtomicU64::new(0);
 /// The window's current opacity (0 to 255).
 static ALPHA: AtomicU8 = AtomicU8::new(255);
 
-/// Opening: the window flies in from the tray, slowing down as it arrives, and fades in
-/// during the first half. Closing: it flies back toward the tray, fading out.
-const OPEN_MS: f32 = 380.0;
-const CLOSE_MS: f32 = 300.0;
-/// How far toward the tray icon the flight starts or ends (share of the way there).
-const FLIGHT: f32 = 0.6;
+/// The window fades in and out where it is, in the middle of the screen.
+const OPEN_MS: f32 = 180.0;
+const CLOSE_MS: f32 = 140.0;
 static EGUI_CTX: OnceLock<eframe::egui::Context> = OnceLock::new();
 
 fn wide(s: &str) -> Vec<u16> {
@@ -182,11 +179,9 @@ pub fn show_main_window() {
                 set_cloak(hwnd, true);
                 REVEAL_PENDING.store(true, Ordering::SeqCst);
             } else if ALPHA.load(Ordering::SeqCst) < 255 && IsIconic(hwnd as HWND) == 0 {
-                // Clicked again while it was flying back to the tray: it comes back.
+                // Clicked again while it was fading out: it fades back in.
                 let generation = ANIMATION.fetch_add(1, Ordering::SeqCst) + 1;
-                if let (Some(from), Some(place)) = (position(hwnd), centered(hwnd)) {
-                    animate(hwnd, generation, from, place.at, ALPHA.load(Ordering::SeqCst), 255, OPEN_MS * 0.7, true, false);
-                }
+                fade(hwnd, generation, ALPHA.load(Ordering::SeqCst), 255, OPEN_MS, false);
             }
             ShowWindowAsync(hwnd as HWND, SW_SHOWNORMAL);
             SetForegroundWindow(hwnd as HWND);
@@ -195,11 +190,11 @@ pub fn show_main_window() {
     request_repaint();
 }
 
-/// Send the window back to the tray: with `fly`, it flies toward the tray icon first.
+/// Send the window back to the tray: with `animated`, it fades out first.
 /// This uses Windows calls like `show_main_window`: hiding it through egui instead left
 /// egui thinking it was still hidden after the tray showed it again, so closing it a
 /// second time did nothing.
-pub fn hide_main_window(fly: bool) {
+pub fn hide_main_window(animated: bool) {
     let hwnd = MAIN_HWND.load(Ordering::SeqCst);
     if hwnd == 0 {
         return;
@@ -207,26 +202,12 @@ pub fn hide_main_window(fly: bool) {
     let generation = ANIMATION.fetch_add(1, Ordering::SeqCst) + 1;
     unsafe {
         let shown = IsWindowVisible(hwnd as HWND) != 0 && IsIconic(hwnd as HWND) == 0;
-        if fly && shown && animations_on() {
-            if let (Some(from), Some(place)) = (position(hwnd), centered(hwnd)) {
-                let tray = tray_point(place.work);
-                let center = (from.0 + place.size.0 / 2, from.1 + place.size.1 / 2);
-                let to = (
-                    from.0 + ((tray.0 - center.0) as f32 * FLIGHT) as i32,
-                    from.1 + ((tray.1 - center.1) as f32 * FLIGHT) as i32,
-                );
-                animate(hwnd, generation, from, to, ALPHA.load(Ordering::SeqCst), 0, CLOSE_MS, false, true);
-                return;
-            }
+        if animated && shown && animations_on() {
+            fade(hwnd, generation, ALPHA.load(Ordering::SeqCst), 0, CLOSE_MS, true);
+            return;
         }
         ShowWindowAsync(hwnd as HWND, SW_HIDE);
     }
-}
-
-/// Where the tray icon is, from the tray's own events.
-pub fn set_tray_point(x: i32, y: i32) {
-    TRAY_X.store(x, Ordering::SeqCst);
-    TRAY_Y.store(y, Ordering::SeqCst);
 }
 
 /// The main window's handle (0 before it exists), for Windows APIs that show their own
@@ -239,42 +220,35 @@ pub fn reveal_pending() -> bool {
     REVEAL_PENDING.load(Ordering::SeqCst)
 }
 
-/// Called by the window once its content fits and has been drawn: it flies in from the
-/// tray to the center of the screen. Fully transparent until then, so it never shows an
-/// empty white frame.
+/// Called by the window once its content fits and has been drawn. First it's put in the
+/// middle of the screen while still invisible (and fully transparent); the next time it's
+/// called, after a frame has been drawn there, it appears and fades in. So it never shows
+/// an empty white frame, anywhere.
 pub fn reveal() {
-    if !REVEAL_PENDING.swap(false, Ordering::SeqCst) {
+    if !REVEAL_PENDING.load(Ordering::SeqCst) {
         return;
     }
     let hwnd = MAIN_HWND.load(Ordering::SeqCst);
-    let generation = ANIMATION.fetch_add(1, Ordering::SeqCst) + 1;
-    let Some(place) = centered(hwnd) else {
-        set_alpha(hwnd, 255);
-        set_cloak(hwnd, false);
-        return;
-    };
-    if animations_on() {
-        let tray = tray_point(place.work);
-        let center = (place.at.0 + place.size.0 / 2, place.at.1 + place.size.1 / 2);
-        let from = (
-            place.at.0 + ((tray.0 - center.0) as f32 * FLIGHT) as i32,
-            place.at.1 + ((tray.1 - center.1) as f32 * FLIGHT) as i32,
-        );
-        set_alpha(hwnd, 0);
-        move_to(hwnd, from, false);
-        set_cloak(hwnd, false);
-        unsafe {
-            SetForegroundWindow(hwnd as HWND);
+    if !REVEAL_PLACED.swap(true, Ordering::SeqCst) {
+        if let Some(place) = centered(hwnd) {
+            move_to(hwnd, place.at);
         }
-        animate(hwnd, generation, from, place.at, 0, 255, OPEN_MS, true, false);
+        set_alpha(hwnd, if animations_on() { 0 } else { 255 });
+        request_repaint();
+        return;
+    }
+    REVEAL_PENDING.store(false, Ordering::SeqCst);
+    REVEAL_PLACED.store(false, Ordering::SeqCst);
+    let generation = ANIMATION.fetch_add(1, Ordering::SeqCst) + 1;
+    set_cloak(hwnd, false);
+    unsafe {
+        SetForegroundWindow(hwnd as HWND);
+    }
+    if animations_on() {
+        fade(hwnd, generation, 0, 255, OPEN_MS, false);
     } else {
         // Windows' "Animation effects" is off: it just appears.
-        move_to(hwnd, place.at, false);
         set_alpha(hwnd, 255);
-        set_cloak(hwnd, false);
-        unsafe {
-            SetForegroundWindow(hwnd as HWND);
-        }
     }
 }
 
@@ -282,8 +256,6 @@ pub fn reveal() {
 /// icon that was just clicked), inside the area the taskbar leaves free.
 struct Place {
     at: (i32, i32),
-    size: (i32, i32),
-    work: RECT,
 }
 
 fn centered(hwnd: isize) -> Option<Place> {
@@ -307,29 +279,13 @@ fn centered(hwnd: isize) -> Option<Place> {
         let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
         let x = work.left + ((work.right - work.left) - w) / 2;
         let y = (work.top + ((work.bottom - work.top) - h) / 2).max(work.top);
-        Some(Place { at: (x, y), size: (w, h), work })
+        Some(Place { at: (x, y) })
     }
 }
 
-/// The tray icon's middle; before the tray has said, the corner where it usually sits.
-fn tray_point(work: RECT) -> (i32, i32) {
-    let (x, y) = (TRAY_X.load(Ordering::SeqCst), TRAY_Y.load(Ordering::SeqCst));
-    if x == i32::MIN {
-        (work.right - 60, work.bottom + 20)
-    } else {
-        (x, y)
-    }
-}
-
-fn position(hwnd: isize) -> Option<(i32, i32)> {
-    let mut rect: RECT = unsafe { std::mem::zeroed() };
-    (unsafe { GetWindowRect(hwnd as HWND, &mut rect) } != 0).then_some((rect.left, rect.top))
-}
-
-fn move_to(hwnd: isize, (x, y): (i32, i32), from_other_thread: bool) {
-    let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | if from_other_thread { SWP_ASYNCWINDOWPOS } else { 0 };
+fn move_to(hwnd: isize, (x, y): (i32, i32)) {
     unsafe {
-        SetWindowPos(hwnd as HWND, std::ptr::null_mut(), x, y, 0, 0, flags);
+        SetWindowPos(hwnd as HWND, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
@@ -352,29 +308,19 @@ fn animations_on() -> bool {
     on != 0
 }
 
-/// Move and fade the window over `ms`, on its own thread so the window keeps drawing.
-/// `opening` uses an ease-out (fast, then settling) with the fade done by halfway;
-/// closing eases in. With `hide`, the window is hidden at the end.
-#[allow(clippy::too_many_arguments)]
-fn animate(hwnd: isize, generation: u64, from: (i32, i32), to: (i32, i32), a0: u8, a1: u8, ms: f32, opening: bool, hide: bool) {
+/// Fade the window from `from` to `to` opacity over `ms`, on its own thread so the window
+/// keeps drawing: easing out when it appears, in when it goes. With `hide`, it's hidden at
+/// the end.
+fn fade(hwnd: isize, generation: u64, from: u8, to: u8, ms: f32, hide: bool) {
     std::thread::spawn(move || {
         let start = Instant::now();
         loop {
             if ANIMATION.load(Ordering::SeqCst) != generation {
-                return; // a newer animation took over
+                return; // a newer fade took over
             }
             let t = (start.elapsed().as_secs_f32() * 1000.0 / ms).min(1.0);
-            let (moved, faded) = if opening {
-                let out_expo = if t >= 1.0 { 1.0 } else { 1.0 - 2f32.powf(-10.0 * t) };
-                let fade = (t / 0.5).min(1.0);
-                (out_expo, 1.0 - (1.0 - fade).powi(3))
-            } else {
-                (t * t * t, t)
-            };
-            let x = from.0 + ((to.0 - from.0) as f32 * moved).round() as i32;
-            let y = from.1 + ((to.1 - from.1) as f32 * moved).round() as i32;
-            let alpha = (a0 as f32 + (a1 as f32 - a0 as f32) * faded).round().clamp(0.0, 255.0) as u8;
-            move_to(hwnd, (x, y), true);
+            let eased = if to > from { 1.0 - (1.0 - t).powi(3) } else { t * t };
+            let alpha = (from as f32 + (to as f32 - from as f32) * eased).round().clamp(0.0, 255.0) as u8;
             set_alpha(hwnd, alpha);
             if t >= 1.0 {
                 break;

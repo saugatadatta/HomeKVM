@@ -3,6 +3,16 @@
 What changed in each HomeKVM version. Every release on GitHub shows its section from
 this file, and a release build stops if the new version has no section here yet.
 
+## [0.10.5]
+
+### Changed
+- The window fades in and out in the middle of the screen, instead of flying out of the
+  tray and back. With Windows' **Animation effects** turned off, it just appears.
+
+### Fixed
+- No small white flash near the tray when the window opens: it's put in place while still
+  invisible and fades in only after it has been drawn there.
+
 ## [0.10.4]
 
 ### Changed
