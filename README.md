@@ -1,5 +1,9 @@
 # HomeKVM
 
+[![Build](https://github.com/saugatadatta/HomeKVM/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/saugatadatta/HomeKVM/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/saugatadatta/HomeKVM)](https://github.com/saugatadatta/HomeKVM/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/saugatadatta/HomeKVM)](LICENSE)
+
 Use one keyboard and mouse across your home PCs. HomeKVM also shares the clipboard, and you
 can copy files from one PC to another with copy and paste. It's one small Rust app, the same on
 every PC. It runs in the tray without admin rights, and only PCs you pair can connect.
