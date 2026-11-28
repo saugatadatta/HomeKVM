@@ -3,6 +3,22 @@
 What changed in each HomeKVM version. Every release on GitHub shows its section from
 this file, and a release build stops if the new version has no section here yet.
 
+## [0.10.4]
+
+### Changed
+- Updates show each step in the Updates panel: checking (the icon spins), downloading with
+  a progress bar, then **Update ready** with a **Restart to update** button. Nothing
+  installs until you click it; before, HomeKVM installed updates and restarted on its own.
+  You'll see this from the next update after 0.10.4.
+
+### Added
+- The Microsoft Store version checks for updates too, with **Check now** and the same steps:
+  the Store downloads the update (or asks first, with **Download**), and it installs when you
+  click **Restart to update**. This works once a newer version is live in the Store.
+
+### Fixed
+- The **Check now** button sits in the middle of the Updates panel.
+
 ## [0.10.3]
 
 ### Added

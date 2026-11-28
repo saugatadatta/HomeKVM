@@ -74,8 +74,11 @@ shows a warning the first time (More info, then Run anyway). Keyboard and mouse 
 global input hooks and input injection, which antivirus heuristics can mistake for a keylogger
 until the app is signed.
 
-From 0.7.0 on, HomeKVM updates itself from these releases: it checks once a day, verifies the
-download, swaps in the new version and restarts.
+HomeKVM keeps itself up to date from these releases. From 0.10.4 on, the Updates panel (in
+Advanced) shows each step: it checks once a day (or on **Check now**), downloads the new
+version with progress and verifies it, then waits. Nothing installs until you click
+**Restart to update**; HomeKVM then swaps in the new version and starts again. The Store
+version goes through the same steps through the Microsoft Store.
 
 ## Code signing policy
 Free code signing provided by [SignPath.io](https://signpath.io), certificate by
@@ -91,7 +94,8 @@ approved.)*
 ## Privacy
 HomeKVM has no accounts, no cloud service and no telemetry. The only internet request is the
 update check: once a day it asks GitHub (`api.github.com`) for the latest HomeKVM release and,
-when there's a newer one, downloads it from GitHub. Nothing about you or your PCs is sent. On
+when there's a newer one, downloads it from GitHub (the Store version asks the Microsoft
+Store instead). Nothing about you or your PCs is sent. On
 your local network it does the following:
 - It announces this PC's name and HomeKVM ID with mDNS, so your other PCs can find it.
 - It talks only to PCs you've paired with a 6-digit code, over an encrypted connection

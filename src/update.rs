@@ -1,20 +1,23 @@
-//! Keeping HomeKVM up to date from GitHub Releases.
+//! Keeping HomeKVM up to date: from GitHub Releases for the standalone exe, and through
+//! the Microsoft Store for the Store version. Both go through the same steps, shown in
+//! the Updates panel:
 //!
-//! Once a day (and on "Check now") HomeKVM asks GitHub for the latest release. When it's
-//! newer, it downloads that release's `HomeKVM.exe` and checks it: the SHA-256 must
-//! match the `HomeKVM.exe.sha256` published with the release, and if this copy is
-//! code-signed, the new one must be validly signed too. Then, at a quiet moment (the
-//! keyboard and mouse aren't being shared right now), it swaps the exe and restarts:
+//! 1. **Checking**: a minute after start, then once a day, and on "Check now".
+//! 2. **Downloading**, with progress. GitHub: the release's `HomeKVM.exe`, which must
+//!    match the `HomeKVM.exe.sha256` published with the release (and, if this copy is
+//!    code-signed, be validly signed too). Store: the Store downloads the new package; if
+//!    it can't do that silently, the panel asks first ("Download") and the Store shows its
+//!    own prompt.
+//! 3. **Ready**: nothing is installed until the user clicks "Restart to update".
+//! 4. **Installing**. GitHub: rename the running exe to `HomeKVM.old.exe` (Windows allows
+//!    renaming a running exe), put the new one in its place, start it with
+//!    `--after-update` and quit; the new version deletes `HomeKVM.old.exe`. Store: the
+//!    Store installs the package, and Windows starts HomeKVM again (it's registered for
+//!    restart).
 //!
-//! 1. rename the running exe to `HomeKVM.old.exe` (Windows allows renaming a running exe),
-//! 2. put the new exe in its place,
-//! 3. start it with `--after-update` and quit,
-//! 4. the new version deletes `HomeKVM.old.exe` when it starts.
-//!
-//! Updates are always installed; there's no setting to skip them. Development builds
-//! only check and log, and never install.
+//! Development builds go through the same steps but never install.
 
-use crate::state::Shared;
+use crate::state::{Shared, UpdateState};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::Arc;
@@ -33,71 +36,155 @@ pub const AFTER_UPDATE: &str = "--after-update";
 const INSTALLS: bool = !cfg!(debug_assertions);
 
 static CHECK_NOW: AtomicBool = AtomicBool::new(false);
+static DOWNLOAD_NOW: AtomicBool = AtomicBool::new(false);
+static INSTALL_NOW: AtomicBool = AtomicBool::new(false);
 
-/// Ask for an update check right away (Settings, "Check now").
+/// "Check now" (and "Try again").
 pub fn check_now() {
     CHECK_NOW.store(true, SeqCst);
 }
 
-/// Start the background updater. `redraw` refreshes the window when the status changes.
-/// The Microsoft Store version is updated by the Store, never by HomeKVM itself.
+/// "Download": the Store version, when the Store needs the user's OK to download.
+pub fn download_now() {
+    DOWNLOAD_NOW.store(true, SeqCst);
+}
+
+/// "Restart to update": install the downloaded update and restart.
+pub fn install_now() {
+    INSTALL_NOW.store(true, SeqCst);
+}
+
+type Set = Arc<dyn Fn(UpdateState) + Send + Sync>;
+
+/// Start the background updater. `redraw` refreshes the window when the state changes.
 pub fn start(shared: Arc<Shared>, redraw: Arc<dyn Fn() + Send + Sync>) {
-    if crate::win::is_packaged() {
-        shared.set_update_status(format!("Version {} · updated by the Microsoft Store", env!("CARGO_PKG_VERSION")));
-        return;
-    }
+    let set: Set = Arc::new(move |state| {
+        shared.set_update(state);
+        redraw();
+    });
+    let packaged = crate::win::is_packaged();
+    let simulate = cfg!(debug_assertions) && std::env::var_os("HOMEKVM_UPDATE_DEMO").is_some();
     std::thread::Builder::new()
         .name("update".into())
-        .spawn(move || run(shared, redraw))
+        .spawn(move || {
+            if simulate {
+                simulate_steps(set)
+            } else if packaged {
+                store::run(set)
+            } else {
+                run_github(set)
+            }
+        })
         .ok();
 }
 
-fn run(shared: Arc<Shared>, redraw: Arc<dyn Fn() + Send + Sync>) {
-    remove_old_exe();
-    let set = |text: String| {
-        shared.set_update_status(text);
-        redraw();
-    };
-    let started = Instant::now();
-    let mut last_check: Option<Instant> = None;
+/// Dev builds only (HOMEKVM_UPDATE_DEMO=1): walks the Updates panel through every step
+/// with a pretend version, without the network, to check how each step looks.
+fn simulate_steps(set: Set) {
+    let version = "0.10.9".to_string();
+    eprintln!("[update] simulating the update steps");
+    // Time to open the window first.
+    std::thread::sleep(Duration::from_secs(9));
     loop {
-        std::thread::sleep(Duration::from_secs(2));
-        let due = match last_check {
-            None => started.elapsed() >= FIRST_CHECK,
-            Some(t) => t.elapsed() >= CHECK_EVERY,
-        };
-        if !(due || CHECK_NOW.swap(false, SeqCst)) {
-            continue;
+        std::thread::sleep(Duration::from_secs(3));
+        set(UpdateState::Checking);
+        std::thread::sleep(Duration::from_millis(2500));
+        for percent in (0..=100).step_by(2) {
+            set(UpdateState::Downloading { version: version.clone(), percent });
+            std::thread::sleep(Duration::from_millis(80));
         }
-        last_check = Some(Instant::now());
-        set("Checking for updates…".into());
-        match check_and_download(&set) {
-            Ok(None) => set(format!("Up to date ({})", env!("CARGO_PKG_VERSION"))),
-            Ok(Some((version, exe))) if INSTALLS => {
-                set(format!("Installing {version}…"));
-                wait_for_quiet_moment(&shared);
-                if let Err(e) = install(&exe) {
-                    set(format!("Couldn't install {version}: {e}"));
-                }
-            }
-            Ok(Some((version, exe))) => {
-                set(format!("{version} downloaded and verified (dev build: not installed)"));
-                eprintln!("[update] {version} verified at {}", exe.display());
-            }
-            Err(e) => set(format!("Update check failed: {e}")),
+        set(UpdateState::Ready(version.clone()));
+        CHECK_NOW.store(false, SeqCst);
+        INSTALL_NOW.store(false, SeqCst);
+        while !INSTALL_NOW.swap(false, SeqCst) && !CHECK_NOW.swap(false, SeqCst) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        set(UpdateState::Installing(version.clone()));
+        std::thread::sleep(Duration::from_secs(3));
+        set(UpdateState::Failed("dev build: updates aren't installed".into()));
+        while !CHECK_NOW.swap(false, SeqCst) {
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
 }
 
-/// Install only while nobody is using the shared keyboard and mouse.
-fn wait_for_quiet_moment(shared: &Shared) {
-    loop {
-        let net = shared.net();
-        if net.controlling.is_none() && net.controlled_by.is_none() {
-            return;
-        }
-        std::thread::sleep(Duration::from_secs(30));
+/// When the next check is due: a minute after start, then once a day.
+struct Schedule {
+    started: Instant,
+    last: Option<Instant>,
+}
+
+impl Schedule {
+    fn new() -> Self {
+        Self { started: Instant::now(), last: None }
     }
+
+    /// True when a check should run now (also on "Check now").
+    fn due(&mut self) -> bool {
+        let due = match self.last {
+            None => self.started.elapsed() >= FIRST_CHECK,
+            Some(t) => t.elapsed() >= CHECK_EVERY,
+        };
+        if due || CHECK_NOW.swap(false, SeqCst) {
+            self.last = Some(Instant::now());
+            return true;
+        }
+        false
+    }
+}
+
+// ---- GitHub Releases --------------------------------------------------------------------
+
+fn run_github(set: Set) {
+    remove_old_exe();
+    let mut schedule = Schedule::new();
+    // The downloaded, verified update waiting for "Restart to update".
+    let mut ready: Option<(String, PathBuf)> = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        DOWNLOAD_NOW.store(false, SeqCst); // only the Store version asks first
+        if INSTALL_NOW.swap(false, SeqCst) {
+            if let Some((version, exe)) = ready.take() {
+                if INSTALLS {
+                    set(UpdateState::Installing(version.clone()));
+                    if let Err(e) = install(&exe) {
+                        set(UpdateState::Failed(format!("couldn't install {version}: {e}")));
+                    }
+                } else {
+                    eprintln!("[update] dev build: {version} verified at {}, not installed", exe.display());
+                    set(UpdateState::Failed("dev build: updates aren't installed".into()));
+                }
+            }
+            continue;
+        }
+        if !schedule.due() {
+            continue;
+        }
+        set(UpdateState::Checking);
+        let staged = ready.as_ref().map(|(v, _)| v.as_str());
+        match check_and_download(&set, staged) {
+            Ok(Found::UpToDate) => set(UpdateState::UpToDate),
+            Ok(Found::AlreadyReady) => set(UpdateState::Ready(staged.unwrap_or_default().to_string())),
+            Ok(Found::Downloaded(version, path)) => {
+                if let Some((_, old)) = ready.replace((version.clone(), path)) {
+                    let _ = std::fs::remove_file(old);
+                }
+                set(UpdateState::Ready(version));
+            }
+            // A failed re-check doesn't lose an update that's already waiting.
+            Err(e) => match &ready {
+                Some((version, _)) => set(UpdateState::Ready(version.clone())),
+                None => set(UpdateState::Failed(e)),
+            },
+        }
+    }
+}
+
+enum Found {
+    UpToDate,
+    /// The latest version is the one already downloaded.
+    AlreadyReady,
+    Downloaded(String, PathBuf),
 }
 
 /// "0.6.0" or "v0.6.0" -> (0, 6, 0).
@@ -118,23 +205,36 @@ struct Asset {
     browser_download_url: String,
 }
 
-/// Returns the new version and the path of its verified exe, or None when up to date.
-fn check_and_download(set: &dyn Fn(String)) -> Result<Option<(String, PathBuf)>, String> {
-    let body = https_get(LATEST, 1024 * 1024)?;
+/// Downloads and verifies a newer release, reporting progress.
+fn check_and_download(set: &Set, staged: Option<&str>) -> Result<Found, String> {
+    let body = https_get(LATEST, 1024 * 1024, None)?;
     let release: Release = serde_json::from_slice(&body).map_err(|_| "unexpected reply from GitHub".to_string())?;
     let latest = parse_version(&release.tag_name).ok_or("unexpected version on GitHub")?;
     let current = parse_version(env!("CARGO_PKG_VERSION")).ok_or("bad own version")?;
     if latest <= current {
-        return Ok(None);
+        return Ok(Found::UpToDate);
     }
     let version = release.tag_name.trim_start_matches('v').to_string();
+    if staged == Some(version.as_str()) {
+        return Ok(Found::AlreadyReady);
+    }
     let url = |name: &str| release.assets.iter().find(|a| a.name == name).map(|a| a.browser_download_url.clone());
     let exe_url = url(ASSET).ok_or("the release has no HomeKVM.exe")?;
     let sum_url = url(CHECKSUM).ok_or("the release has no checksum")?;
 
-    set(format!("Downloading {version}…"));
-    let expected = String::from_utf8_lossy(&https_get(&sum_url, 1024)?).trim().to_lowercase();
-    let exe = https_get(&exe_url, MAX_EXE)?;
+    set(UpdateState::Downloading { version: version.clone(), percent: 0 });
+    let expected = String::from_utf8_lossy(&https_get(&sum_url, 1024, None)?).trim().to_lowercase();
+    let mut shown = 0u8;
+    let mut progress = |done: usize, total: usize| {
+        if total > 0 {
+            let percent = (done * 100 / total).min(100) as u8;
+            if percent != shown {
+                shown = percent;
+                set(UpdateState::Downloading { version: version.clone(), percent });
+            }
+        }
+    };
+    let exe = https_get(&exe_url, MAX_EXE, Some(&mut progress))?;
     let actual: String =
         ring::digest::digest(&ring::digest::SHA256, &exe).as_ref().iter().map(|b| format!("{b:02x}")).collect();
     if !expected.starts_with(&actual) {
@@ -152,7 +252,7 @@ fn check_and_download(set: &dyn Fn(String)) -> Result<Option<(String, PathBuf)>,
         let _ = std::fs::remove_file(&path);
         return Err("the new version isn't properly signed".into());
     }
-    Ok(Some((version, path)))
+    Ok(Found::Downloaded(version, path))
 }
 
 fn update_dir() -> Option<PathBuf> {
@@ -188,7 +288,8 @@ fn install(new_exe: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// After an update, delete the previous version (it may take a moment to be released).
+/// After an update, delete the previous version (it may take a moment to be released),
+/// and any download left from before.
 fn remove_old_exe() {
     let Ok(me) = std::env::current_exe() else { return };
     let old = old_exe_path(&me);
@@ -230,14 +331,16 @@ fn signature_valid(path: &Path) -> bool {
 }
 
 /// A small HTTPS GET with Windows' own HTTP stack (system proxy settings and
-/// certificate store). Follows GitHub's download redirects.
-fn https_get(url: &str, max: usize) -> Result<Vec<u8>, String> {
+/// certificate store). Follows GitHub's download redirects. `progress` gets the bytes
+/// read so far and the total size (0 when the server doesn't say).
+fn https_get(url: &str, max: usize, mut progress: Option<&mut dyn FnMut(usize, usize)>) -> Result<Vec<u8>, String> {
     use windows_sys::Win32::Networking::WinHttp::{
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable,
         WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
     };
     const ACCESS_AUTOMATIC_PROXY: u32 = 4;
     const FLAG_SECURE: u32 = 0x0080_0000;
+    const QUERY_CONTENT_LENGTH: u32 = 5;
     const QUERY_STATUS_CODE: u32 = 19;
     const QUERY_FLAG_NUMBER: u32 = 0x2000_0000;
 
@@ -291,19 +394,27 @@ fn https_get(url: &str, max: usize) -> Result<Vec<u8>, String> {
         {
             return Err(failed("send"));
         }
-        let (mut status, mut size) = (0u32, 4u32);
-        WinHttpQueryHeaders(
-            request.0,
-            QUERY_STATUS_CODE | QUERY_FLAG_NUMBER,
-            std::ptr::null(),
-            (&mut status as *mut u32).cast(),
-            &mut size,
-            std::ptr::null_mut(),
-        );
+        let number = |query: u32| -> u32 {
+            let (mut value, mut size) = (0u32, 4u32);
+            WinHttpQueryHeaders(
+                request.0,
+                query | QUERY_FLAG_NUMBER,
+                std::ptr::null(),
+                (&mut value as *mut u32).cast(),
+                &mut size,
+                std::ptr::null_mut(),
+            );
+            value
+        };
+        let status = number(QUERY_STATUS_CODE);
         if status != 200 {
             return Err(format!("GitHub answered {status}"));
         }
-        let mut body = Vec::new();
+        let total = number(QUERY_CONTENT_LENGTH) as usize;
+        if total > max {
+            return Err("the download is too large".into());
+        }
+        let mut body = Vec::with_capacity(total.min(max));
         loop {
             let mut available = 0u32;
             if WinHttpQueryDataAvailable(request.0, &mut available) == 0 {
@@ -322,8 +433,202 @@ fn https_get(url: &str, max: usize) -> Result<Vec<u8>, String> {
                 return Err(failed("read"));
             }
             body.truncate(start + read as usize);
+            if let Some(report) = progress.as_mut() {
+                report(body.len(), total);
+            }
         }
         Ok(body)
+    }
+}
+
+// ---- Microsoft Store --------------------------------------------------------------------
+
+/// The Store version: the Store finds, downloads and installs updates (the only way Store
+/// rules allow), through Windows' StoreContext.
+mod store {
+    use super::{Schedule, Set, DOWNLOAD_NOW, INSTALL_NOW};
+    use crate::state::UpdateState;
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::time::Duration;
+    use windows::core::Interface;
+    use windows::Foundation::Collections::IVectorView;
+    use windows::Foundation::{AsyncOperationProgressHandler, IAsyncOperationWithProgress};
+    use windows::Services::Store::{
+        StoreContext, StorePackageUpdate, StorePackageUpdateResult, StorePackageUpdateState, StorePackageUpdateStatus,
+    };
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    use windows::Win32::UI::Shell::IInitializeWithWindow;
+
+    /// A Store update this PC can get.
+    struct Found {
+        context: StoreContext,
+        updates: IVectorView<StorePackageUpdate>,
+        version: String,
+        downloaded: bool,
+    }
+
+    type Operation = IAsyncOperationWithProgress<StorePackageUpdateResult, StorePackageUpdateStatus>;
+
+    pub fn run(set: Set) {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        let mut schedule = Schedule::new();
+        let mut found: Option<Found> = None;
+        loop {
+            std::thread::sleep(Duration::from_millis(300));
+            if DOWNLOAD_NOW.swap(false, SeqCst) {
+                if let Some(f) = found.as_mut().filter(|f| !f.downloaded) {
+                    match download(f, false, &set) {
+                        Ok(()) => {
+                            f.downloaded = true;
+                            set(UpdateState::Ready(f.version.clone()));
+                        }
+                        Err(e) => set(UpdateState::Failed(e)),
+                    }
+                }
+                continue;
+            }
+            if INSTALL_NOW.swap(false, SeqCst) {
+                if let Some(f) = found.as_ref().filter(|f| f.downloaded) {
+                    set(UpdateState::Installing(f.version.clone()));
+                    restart_after_update();
+                    // On success the Store closes HomeKVM to install, and Windows starts it again.
+                    if let Err(e) = install(f, &set) {
+                        set(UpdateState::Failed(e));
+                    }
+                }
+                continue;
+            }
+            if !schedule.due() {
+                continue;
+            }
+            set(UpdateState::Checking);
+            match check() {
+                Ok(None) => {
+                    found = None;
+                    set(UpdateState::UpToDate);
+                }
+                Ok(Some(mut f)) => {
+                    if found.as_ref().is_some_and(|old| old.downloaded && old.version == f.version) {
+                        set(UpdateState::Ready(f.version.clone()));
+                        continue;
+                    }
+                    // Downloads by itself when the Store allows it; otherwise it asks first.
+                    if f.context.CanSilentlyDownloadStorePackageUpdates().unwrap_or(false) {
+                        match download(&f, true, &set) {
+                            Ok(()) => {
+                                f.downloaded = true;
+                                set(UpdateState::Ready(f.version.clone()));
+                            }
+                            Err(e) => set(UpdateState::Failed(e)),
+                        }
+                    } else {
+                        set(UpdateState::Available(f.version.clone()));
+                    }
+                    found = Some(f);
+                }
+                Err(e) => set(UpdateState::Failed(e)),
+            }
+        }
+    }
+
+    fn message(e: windows::core::Error) -> String {
+        format!("the Microsoft Store said: {}", e.message())
+    }
+
+    /// A Store context tied to the main window, so the Store's prompts appear over it.
+    fn context() -> windows::core::Result<StoreContext> {
+        let context = StoreContext::GetDefault()?;
+        let hwnd = crate::win::main_hwnd();
+        if hwnd != 0 {
+            let init: IInitializeWithWindow = context.cast()?;
+            unsafe {
+                init.Initialize(HWND(hwnd as _))?;
+            }
+        }
+        Ok(context)
+    }
+
+    fn check() -> Result<Option<Found>, String> {
+        let context = context().map_err(message)?;
+        let updates = context.GetAppAndOptionalStorePackageUpdatesAsync().and_then(|op| op.get()).map_err(message)?;
+        if updates.Size().map_err(message)? == 0 {
+            return Ok(None);
+        }
+        let version = updates
+            .GetAt(0)
+            .and_then(|u| u.Package())
+            .and_then(|p| p.Id())
+            .and_then(|id| id.Version())
+            .map(|v| format!("{}.{}.{}", v.Major, v.Minor, v.Build))
+            .unwrap_or_else(|_| "a new version".into());
+        Ok(Some(Found { context, updates, version, downloaded: false }))
+    }
+
+    /// The Store reports download progress from 0 to 0.8, then installing to 1.
+    fn watch(op: &Operation, version: &str, installing: bool, set: &Set) {
+        let (version, set) = (version.to_string(), set.clone());
+        let mut shown = u8::MAX;
+        let _ = op.SetProgress(&AsyncOperationProgressHandler::new(move |_, status: &StorePackageUpdateStatus| {
+            if installing {
+                set(UpdateState::Installing(version.clone()));
+            } else {
+                let percent = (status.TotalDownloadProgress / 0.8 * 100.0).clamp(0.0, 100.0) as u8;
+                if percent != shown {
+                    shown = percent;
+                    set(UpdateState::Downloading { version: version.clone(), percent });
+                }
+            }
+            Ok(())
+        }));
+    }
+
+    fn finished(op: Operation) -> Result<(), String> {
+        let result = op.get().map_err(message)?;
+        match result.OverallState().map_err(message)? {
+            StorePackageUpdateState::Canceled => Err("the update was canceled".into()),
+            StorePackageUpdateState::ErrorLowBattery => Err("the battery is too low; plug in and try again".into()),
+            StorePackageUpdateState::ErrorWiFiRequired | StorePackageUpdateState::ErrorWiFiRecommended => {
+                Err("the Store wants Wi-Fi for this download".into())
+            }
+            StorePackageUpdateState::OtherError => Err("the Microsoft Store couldn't download it".into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Download only; `silent` when the Store allows it without asking.
+    fn download(f: &Found, silent: bool, set: &Set) -> Result<(), String> {
+        set(UpdateState::Downloading { version: f.version.clone(), percent: 0 });
+        let op = if silent {
+            f.context.TrySilentDownloadStorePackageUpdatesAsync(&f.updates)
+        } else {
+            f.context.RequestDownloadStorePackageUpdatesAsync(&f.updates)
+        }
+        .map_err(message)?;
+        watch(&op, &f.version, false, set);
+        finished(op)
+    }
+
+    /// Install what was downloaded (the download part is already done, so this is quick).
+    fn install(f: &Found, set: &Set) -> Result<(), String> {
+        let op = if f.context.CanSilentlyDownloadStorePackageUpdates().unwrap_or(false) {
+            f.context.TrySilentDownloadAndInstallStorePackageUpdatesAsync(&f.updates)
+        } else {
+            f.context.RequestDownloadAndInstallStorePackageUpdatesAsync(&f.updates)
+        }
+        .map_err(message)?;
+        watch(&op, &f.version, true, set);
+        finished(op)
+    }
+
+    /// Ask Windows to start HomeKVM again after the Store closes it to install.
+    fn restart_after_update() {
+        let args: Vec<u16> = super::AFTER_UPDATE.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            windows_sys::Win32::System::Recovery::RegisterApplicationRestart(args.as_ptr(), 0);
+        }
     }
 }
 
@@ -343,7 +648,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_release() {
-        let body = super::https_get(super::LATEST, 1024 * 1024).expect("GitHub reachable");
+        let body = super::https_get(super::LATEST, 1024 * 1024, None).expect("GitHub reachable");
         let release: super::Release = serde_json::from_slice(&body).expect("release JSON");
         println!("latest: {} with {:?}", release.tag_name, release.assets.iter().map(|a| &a.name).collect::<Vec<_>>());
         assert!(parse_version(&release.tag_name).is_some());

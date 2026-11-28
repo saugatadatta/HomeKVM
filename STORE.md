@@ -6,13 +6,19 @@ HomeKVM is published two ways from the same code:
 |---|---|---|
 | File | `HomeKVM.exe` (single portable file) | MSIX package |
 | Signed by | SignPath Foundation (once approved) | Microsoft, when published |
-| Updates | HomeKVM's own updater, from GitHub Releases | The Store |
+| Updates | HomeKVM downloads from GitHub Releases | The Store downloads (asked through `StoreContext`) |
 | Start at sign-in | Run key | The package's startup task |
 
 It's the same `HomeKVM.exe` inside the package. HomeKVM notices when it runs from the Store
-package: then the Store handles updates (HomeKVM's updater stays off, as Store rules
-require), and "Start when I sign in" uses the package's startup task. Everything else is
-identical, and Store and GitHub copies pair and work together.
+package: then the Store handles updates (HomeKVM never downloads an exe itself, as Store
+rules require), and "Start when I sign in" uses the package's startup task. Everything else
+is identical, and Store and GitHub copies pair and work together.
+
+Both versions show the same steps in the Updates panel: checking, downloading with progress,
+then **Restart to update** (nothing installs before that). The Store version asks the Store
+through Windows' `StoreContext` API: it downloads silently when the Store allows it,
+otherwise the panel shows **Download** and the Store asks first. The Store only answers apps
+installed from the Store, so this can only be seen once a newer version is live there.
 
 ## What's automated
 On every push, GitHub Actions builds the Store package (`HomeKVM-<version>.msixupload`, a run

@@ -229,6 +229,12 @@ pub fn set_tray_point(x: i32, y: i32) {
     TRAY_Y.store(y, Ordering::SeqCst);
 }
 
+/// The main window's handle (0 before it exists), for Windows APIs that show their own
+/// dialogs over it.
+pub fn main_hwnd() -> isize {
+    MAIN_HWND.load(Ordering::SeqCst)
+}
+
 pub fn reveal_pending() -> bool {
     REVEAL_PENDING.load(Ordering::SeqCst)
 }

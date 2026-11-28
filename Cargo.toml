@@ -1,6 +1,6 @@
 [package]
 name = "homekvm"
-version = "0.10.3"
+version = "0.10.4"
 edition = "2021"
 description = "Share one keyboard and mouse, the clipboard and files across your home PCs"
 license = "MIT"
@@ -35,6 +35,8 @@ windows = { version = "0.58", features = [
     "implement",
     "ApplicationModel",
     "Foundation",
+    "Foundation_Collections",
+    "Services_Store",
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
@@ -61,6 +63,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Threading",
+    "Win32_System_Recovery",
     "Win32_UI_HiDpi",
     "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",

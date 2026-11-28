@@ -9,7 +9,7 @@ use crate::activity::{self, Health};
 use crate::config::{self, Config, Side};
 use crate::devices::{self, Attached, Link};
 use crate::net::{Cmd, NetHandle};
-use crate::state::{NetView, PairingView, PeerView, Shared, Status};
+use crate::state::{NetView, PairingView, PeerView, Shared, Status, UpdateState};
 use crate::{autostart, tray::TrayHandle};
 use eframe::egui::{
     self, text::LayoutJob, Align, Align2, Color32, Context, FontFamily, FontId, Frame, Layout, Margin, Pos2, Rect,
@@ -64,6 +64,9 @@ const I_LEFT: &str = "\u{ea60}";
 const I_RIGHT: &str = "\u{ea61}";
 const I_UP: &str = "\u{ea62}";
 const I_DOWN: &str = "\u{ea5f}";
+const I_DOWNLOAD: &str = "\u{ea96}";
+const I_ALERT: &str = "\u{ea05}";
+const I_RESTART: &str = "\u{eb15}";
 
 /// The colors of one theme.
 #[derive(Clone, Copy)]
@@ -733,7 +736,7 @@ impl App {
 
     /// The last card on the right: grows by `extra`, which goes above Updates.
     fn advanced_card(&mut self, ui: &mut Ui, extra: f32) {
-        let update_status = self.shared.update_status();
+        let update = self.shared.update();
         let rows = diagnostics(&self.view);
         let c = &mut self.cfg;
         card(ui, I_TOOL, "Advanced", |_| {}, |ui| {
@@ -774,40 +777,7 @@ impl App {
             ui.add_space(6.0 + extra);
 
             // Updates, at the end in its own panel.
-            let packaged = crate::win::is_packaged();
-            let second = if packaged {
-                "Updated by the Microsoft Store".to_string()
-            } else if update_status.is_empty() || update_status.starts_with("Up to date") {
-                "Installed automatically from GitHub Releases".to_string()
-            } else {
-                update_status
-            };
-            Frame::none()
-                .fill(p.raise)
-                .stroke(Stroke::new(1.0_f32, p.line))
-                .rounding(Rounding::same(10.0))
-                .inner_margin(Margin::symmetric(12.0, 9.0))
-                .show(ui, |ui| {
-                    let w = ui.available_width();
-                    ui.allocate_ui_with_layout(Vec2::new(w, 40.0), Layout::left_to_right(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        ui.label(RichText::new(I_REFRESH).font(icon_font(18.0)).color(p.ac));
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.label(RichText::new("Updates").color(p.tx));
-                            ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).size(11.0).color(p.tx2));
-                            ui.label(RichText::new(second).size(11.0).color(p.tx2));
-                        });
-                        // The Store version is updated by the Store.
-                        if !packaged {
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.add(egui::Button::new("Check now").min_size(Vec2::new(0.0, CONTROL_HEIGHT))).clicked() {
-                                    crate::update::check_now();
-                                }
-                            });
-                        }
-                    });
-                });
+            updates_panel(ui, &update);
         });
     }
 
@@ -1069,6 +1039,163 @@ fn card<R>(ui: &mut Ui, icon: &str, title: &str, right: impl FnOnce(&mut Ui), bo
             body(ui)
         })
         .inner
+}
+
+/// The Updates panel: the same steps for the GitHub and Store versions. Checking spins
+/// the icon; downloading shows progress; a downloaded update waits for "Restart to update".
+fn updates_panel(ui: &mut Ui, state: &UpdateState) {
+    let p = pal(ui);
+    let packaged = crate::win::is_packaged();
+    let current = env!("CARGO_PKG_VERSION");
+    let source = if packaged { "Updated through the Microsoft Store" } else { "From GitHub Releases" };
+    enum Action {
+        Check(&'static str),
+        Download,
+        Restart,
+        Waiting(&'static str),
+        Nothing,
+    }
+    let (icon, color, spin, title, line1, line2, progress, action) = match state {
+        UpdateState::Idle => (I_REFRESH, p.ac, false, "Updates", format!("Version {current}"), source.to_string(), None, Action::Check("Check now")),
+        UpdateState::Checking => {
+            let line2 = if packaged { "Checking the Microsoft Store…" } else { "Checking GitHub Releases…" };
+            (I_REFRESH, p.ac, true, "Updates", format!("Version {current}"), line2.to_string(), None, Action::Waiting("Check now"))
+        }
+        UpdateState::UpToDate => {
+            (I_REFRESH, p.ac, false, "Updates", format!("Version {current} · up to date"), source.to_string(), None, Action::Check("Check now"))
+        }
+        UpdateState::Available(v) => (
+            I_DOWNLOAD,
+            p.ok,
+            false,
+            "Update available",
+            format!("Version {v} is ready in the Store"),
+            "It installs when you restart".to_string(),
+            None,
+            Action::Download,
+        ),
+        UpdateState::Downloading { version, percent } => (
+            I_DOWNLOAD,
+            p.ac,
+            false,
+            "Downloading update",
+            format!("Version {version} · {percent}%"),
+            String::new(),
+            Some(*percent),
+            Action::Waiting("Restart to update"),
+        ),
+        UpdateState::Ready(v) => (
+            I_DOWNLOAD,
+            p.ok,
+            false,
+            "Update ready",
+            format!("Version {v} is downloaded"),
+            "It installs when you restart".to_string(),
+            None,
+            Action::Restart,
+        ),
+        UpdateState::Installing(v) => (
+            I_DOWNLOAD,
+            p.ac,
+            true,
+            "Installing update",
+            format!("Version {v}"),
+            "HomeKVM restarts by itself".to_string(),
+            None,
+            Action::Nothing,
+        ),
+        UpdateState::Failed(e) => {
+            (I_ALERT, p.bad, false, "Updates", format!("Version {current}"), format!("Couldn't update: {e}"), None, Action::Check("Try again"))
+        }
+    };
+
+    Frame::none()
+        .fill(p.raise)
+        .stroke(Stroke::new(1.0_f32, p.line))
+        .rounding(Rounding::same(10.0))
+        .inner_margin(Margin::symmetric(12.0, 9.0))
+        .show(ui, |ui| {
+            let w = ui.available_width();
+            // As tall as the three lines of text, so the icon and button sit in the middle.
+            let rows = ui.fonts(|f| f.row_height(&FontId::proportional(13.0)) + 2.0 * f.row_height(&FontId::proportional(11.0)));
+            ui.allocate_ui_with_layout(Vec2::new(w, rows.max(CONTROL_HEIGHT)), Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                update_icon(ui, icon, color, spin);
+                // The button first (on the right), so the text gets the room that's left.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let size = Vec2::new(0.0, CONTROL_HEIGHT);
+                    match action {
+                        Action::Check(text) => {
+                            if ui.add(egui::Button::new(text).min_size(size)).clicked() {
+                                crate::update::check_now();
+                            }
+                        }
+                        Action::Download => {
+                            let button = egui::Button::new(icon_text(I_DOWNLOAD, "Download", 12.5, Color32::WHITE))
+                                .fill(p.ac)
+                                .stroke(Stroke::NONE)
+                                .min_size(size);
+                            if ui.add(button).clicked() {
+                                crate::update::download_now();
+                            }
+                        }
+                        Action::Restart => {
+                            let button = egui::Button::new(icon_text(I_RESTART, "Restart to update", 12.5, Color32::WHITE))
+                                .fill(p.ac)
+                                .stroke(Stroke::NONE)
+                                .min_size(size);
+                            if ui.add(button).clicked() {
+                                crate::update::install_now();
+                            }
+                        }
+                        Action::Waiting(text) => {
+                            ui.add_enabled(false, egui::Button::new(text).min_size(size));
+                        }
+                        Action::Nothing => {}
+                    }
+                    ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.label(RichText::new(title).color(p.tx));
+                        let line = |text: String, color: Color32| egui::Label::new(RichText::new(text).size(11.0).color(color)).truncate();
+                        ui.add(line(line1, p.tx2));
+                        match progress {
+                            Some(percent) => progress_bar(ui, percent),
+                            None => {
+                                let color = if matches!(state, UpdateState::Failed(_)) { p.bad } else { p.tx2 };
+                                ui.add(line(line2, color));
+                            }
+                        }
+                    });
+                });
+            });
+        });
+}
+
+/// The panel's icon; it spins while checking or installing.
+fn update_icon(ui: &mut Ui, icon: &str, color: Color32, spin: bool) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+    let galley = ui.painter().layout_no_wrap(icon.to_owned(), icon_font(18.0), color);
+    if spin {
+        let angle = (ui.input(|i| i.time) * std::f64::consts::TAU) as f32;
+        let rotation = egui::emath::Rot2::from_angle(angle);
+        let pos = rect.center() - rotation * (galley.size() / 2.0);
+        ui.painter().add(egui::epaint::TextShape::new(pos, galley, color).with_angle(angle));
+        ui.ctx().request_repaint();
+    } else {
+        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    }
+}
+
+/// A thin accent bar for download progress.
+fn progress_bar(ui: &mut Ui, percent: u8) {
+    let p = pal(ui);
+    // As tall as the line of text it replaces, so the panel doesn't change height.
+    let line = ui.fonts(|f| f.row_height(&FontId::proportional(11.0)));
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(180.0_f32.min(ui.available_width()), line), Sense::hover());
+    let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 4.0));
+    ui.painter().rect_filled(track, 2.0, p.off);
+    let filled = Rect::from_min_size(track.min, Vec2::new(track.width() * percent as f32 / 100.0, track.height()));
+    ui.painter().rect_filled(filled, 2.0, p.ac);
 }
 
 /// The connection status in a pill: a colored dot and the status.

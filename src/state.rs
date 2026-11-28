@@ -111,8 +111,27 @@ pub struct Shared {
     paused: AtomicBool,
     net: Mutex<NetView>,
     layout: Mutex<Layout>,
-    /// What the updater is doing, for Settings.
-    update_status: Mutex<String>,
+    /// What the updater is doing, for the Updates panel.
+    update: Mutex<UpdateState>,
+}
+
+/// Where an update is, step by step. The GitHub and Microsoft Store versions go through
+/// the same steps: checking, downloading, ready (waiting until the user restarts), and
+/// installing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum UpdateState {
+    /// Not checked yet.
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    /// A newer version is in the Store, and the Store needs the user's OK to download it.
+    Available(String),
+    Downloading { version: String, percent: u8 },
+    /// Downloaded and verified: installs when the user clicks "Restart to update".
+    Ready(String),
+    Installing(String),
+    Failed(String),
 }
 
 impl Shared {
@@ -126,13 +145,13 @@ impl Shared {
         }
     }
 
-    pub fn update_status(&self) -> String {
-        self.update_status.lock().map(|s| s.clone()).unwrap_or_default()
+    pub fn update(&self) -> UpdateState {
+        self.update.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    pub fn set_update_status(&self, text: String) {
-        if let Ok(mut s) = self.update_status.lock() {
-            *s = text;
+    pub fn set_update(&self, state: UpdateState) {
+        if let Ok(mut s) = self.update.lock() {
+            *s = state;
         }
     }
 
