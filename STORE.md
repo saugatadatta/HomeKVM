@@ -26,9 +26,14 @@ Microsoft requires these steps in Partner Center once. After that, releases go t
 by themselves.
 
 ### 1. Developer account and app name
-1. Sign up at [Partner Center](https://partner.microsoft.com/dashboard/registration) as an
-   **individual** developer. Microsoft has made this free for individuals; check the price
-   shown when you sign up.
+1. Sign up at [storedeveloper.microsoft.com](https://storedeveloper.microsoft.com), the only
+   entry point for Microsoft's current (free) sign-up: **Get started for free → Individual
+   developer**, sign in with your **personal** Microsoft account, verify your identity with a
+   government ID and a selfie, and complete the profile. Then **Go to Partner Center
+   dashboard** and pick the same account. If the Apps and games tile isn't there yet, wait
+   about five minutes and refresh, or open https://aka.ms/submitwindowsapp. (Signing up
+   through Partner Center's own registration page shows the old flow, and an account that
+   hasn't joined shows "Access restricted".)
 2. Under **Apps and games**, choose **New product → MSIX or PWA app** and **reserve the name
    "HomeKVM"** (or an alternative if it's taken).
 
@@ -77,15 +82,32 @@ submission in Partner Center:
 
 After it passes certification, every new version tag submits automatically.
 
-## Store listing text
+## The Store listing
+HomeKVM is reserved as **HomeKVM** (Store ID `9P4H0H9835CN`, publisher **iAmSaugata**). The
+first submission, 0.10.3, went to certification on 2026-11-28. These are the values it was
+submitted with, so later listing updates stay consistent.
+
+**Pricing and availability:** Free (base price 0), all worldwide markets, public and
+discoverable, released as soon as it passes certification.
+
+**Properties:** category Utilities & tools. Personal information: yes (keystrokes and clipboard
+contents travel between the user's own paired PCs), privacy policy
+`https://github.com/saugatadatta/HomeKVM#privacy`. Website
+`https://github.com/saugatadatta/HomeKVM`, support contact
+`https://github.com/saugatadatta/HomeKVM/issues`. Recommended hardware: keyboard and mouse.
+
+**Age ratings:** IARC questionnaire, "All Other App Types", every answer No. Result: 3+
+(ESRB Everyone, PEGI 3, USK 0).
+
+**Packages:** the `.msixupload` from the GitHub Actions build, Windows 10/11 Desktop only.
 
 **Short description:**
 > One keyboard and mouse across your Windows PCs, with a shared clipboard and file paste.
 
 **Description:**
 > HomeKVM lets you use one keyboard and mouse across several Windows PCs on your home
-> network, like a software KVM switch. Move the mouse past a screen edge and it continues on
-> the PC placed there.
+> network, like a software KVM switch. Move the mouse past the left or right edge of the
+> screen and it continues on the PC placed there.
 >
 > - One shared clipboard: copy text, screenshots or files on one PC and paste on another.
 >   Files only transfer when you paste.
@@ -97,13 +119,68 @@ After it passes certification, every new version tag submits automatically.
 >
 > Free and open source (MIT): https://github.com/saugatadatta/HomeKVM
 
-**Notes for certification:**
+**Product features:**
+- Share one keyboard and mouse across Windows PCs
+- Shared clipboard for text, images and files
+- Pair PCs with a 6-digit code
+- Encrypted local-network connection, no cloud
+- Runs in the tray, no admin rights needed
+
+**Keywords:** KVM, keyboard mouse sharing, mouse without borders, clipboard sharing, multiple
+PCs, software KVM, share mouse.
+
+**Copyright:** © 2026 Saugata Datta. **Developed by:** Saugata Datta. **Additional license
+terms:** MIT License, https://github.com/saugatadatta/HomeKVM/blob/main/LICENSE.
+
+**Notes for certification** (Submission options; the field takes at most 500 characters):
+> Shares one keyboard and mouse between the user's own PCs (like PowerToys Mouse Without
+> Borders). runFullTrust is needed for low-level keyboard/mouse hooks, active only when the
+> user turns on sharing, and SendInput on the controlled PC. Input goes only to PCs paired
+> with a 6-digit code, over encrypted LAN; nothing is recorded. Test: install on 2 PCs on one
+> network, pair, set the 2nd PC to Right, move the mouse off the right edge. No self-update.
+> Details: github.com/saugatadatta/HomeKVM
+
+**Additional Testing Information** (Supplemental info; kept for every submission):
 > HomeKVM shares one keyboard and mouse between the user's own PCs, like PowerToys Mouse
 > Without Borders. As a full-trust desktop app (runFullTrust) it uses low-level keyboard and
 > mouse hooks (WH_KEYBOARD_LL, WH_MOUSE_LL), only while the user turns on "Share my keyboard
 > and mouse", and SendInput on the PC being controlled. Input is sent only to a PC the user
 > paired with a 6-digit code, over an encrypted local-network connection, and is never
-> recorded. To test: install on two PCs on the same network, pair them, place the second PC
-> on the right in Screen layout, and move the mouse off the right edge. Full details:
-> https://github.com/saugatadatta/HomeKVM#how-the-keyboard-and-mouse-hooks-are-used.
-> The Store version doesn't update itself; the Store updates it.
+> recorded.
+>
+> To test: install on two PCs on the same network, open HomeKVM from the tray on both, click
+> Pair on one and confirm that both show the same code, then set the second PC to "Right" in
+> Other PCs and move the mouse off the right edge of the screen. Copy text on one PC and paste
+> it on the other to test the shared clipboard.
+>
+> No account or sign-in is needed. The Store version doesn't update itself; the Store updates
+> it. Details: https://github.com/saugatadatta/HomeKVM#how-the-keyboard-and-mouse-hooks-are-used
+
+No credentials: HomeKVM has no account or sign-in.
+
+## Store images
+The listing images are in [`docs/store`](docs/store):
+
+| File | Where it goes in the listing |
+|---|---|
+| `1-screenshot-dark.png`, `2-screenshot-pairing.png`, `3-screenshot-light.png` | Screenshots, Desktop tab, in this order (1920 x 1080) |
+| `poster-9x16-1440x2160.png` | Store logos: 9:16 Poster art |
+| `box-art-1x1-2160x2160.png` | Store logos: 1:1 Box art |
+| `app-tile-icon-300x300.png` | Store display images: 1:1 App tile icon |
+
+The screenshots come from a dev build in its Store screenshot mode (`HOMEKVM_DEMO=store`, or
+`store-pair` for the pairing request): sample PCs, made-up addresses and ID, sharing shown on.
+It exists only in dev builds, so release builds never show it. To make new ones after a
+change to the window:
+
+```powershell
+cargo build --no-default-features
+pwsh tools/store-screenshot.ps1 -Theme dark  -Out target/store-art/window-dark.png
+pwsh tools/store-screenshot.ps1 -Theme light -Out target/store-art/window-light.png
+pwsh tools/store-screenshot.ps1 -Theme dark  -Mode store-pair -Out target/store-art/window-pair.png
+cargo run --example icon_png -- 1024 target/store-art/icon-1024.png
+python tools/store-images.py target/store-art docs/store
+```
+
+`tools/store-images.py` needs Pillow (`pip install pillow`). Close any running HomeKVM first:
+only one copy runs at a time.

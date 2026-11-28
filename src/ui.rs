@@ -213,12 +213,28 @@ impl App {
     ) -> Self {
         install_fonts(&cc.egui_ctx);
         apply_theme(&cc.egui_ctx);
+        let mut cfg = cfg;
+        let attached = if store_demo() {
+            // Dev-only sample data for Store screenshots; never saved (`saved` matches).
+            cfg.device_name = "Desk PC".into();
+            cfg.share_input = None;
+            cfg.start_at_login = false;
+            cfg.edge_delay = false;
+            cfg.clipboard_text = true;
+            cfg.clipboard_images = true;
+            cfg.send_files = true;
+            cfg.layout.left = vec!["CREATORX".into()];
+            cfg.layout.right = vec!["Office PC".into()];
+            Attached { keyboards: vec![Link::Usb], mice: vec![Link::Usb], builtin_keyboard: false, builtin_pointer: false }
+        } else {
+            devices::scan()
+        };
         Self {
             saved: cfg.clone(),
             cfg,
             shared,
             tray,
-            attached: devices::scan(),
+            attached,
             last_scan: Instant::now(),
             error: None,
             fit_frames: 0,
@@ -251,7 +267,7 @@ impl App {
     /// The app mark, the name, the status pill, and Pause on the right.
     fn header(&mut self, ui: &mut Ui) {
         let p = pal(ui);
-        let status = self.shared.status();
+        let status = if store_demo() { Status::Connected } else { self.shared.status() };
         let w = ui.available_width();
         ui.allocate_ui_with_layout(Vec2::new(w, 30.0), Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
@@ -411,7 +427,7 @@ impl App {
             });
             ui.label(RichText::new(describe(&self.attached)).size(12.0).color(p.tx2));
 
-            if !crate::input::available() {
+            if !crate::input::available() && !store_demo() {
                 // Built with --no-default-features: no global keyboard and mouse hooks.
                 ui.label(RichText::new("Keyboard and mouse sharing isn't included in this build.").size(12.0).color(p.tx2));
                 return;
@@ -673,7 +689,7 @@ impl App {
     }
 
     fn settings_card(&mut self, ui: &mut Ui) {
-        let login = if autostart::APPLIES || crate::win::is_packaged() {
+        let login = if autostart::APPLIES || crate::win::is_packaged() || store_demo() {
             "Off until you turn it on"
         } else {
             "Dev build: not applied on this PC"
@@ -826,7 +842,7 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
         self.hide_instead_of_close(ctx);
-        self.view = self.shared.net();
+        self.view = if store_demo() { demo_view() } else { self.shared.net() };
         apply_settings(&self.cfg, &self.attached);
         // Tell paired PCs when this PC starts or stops sharing its keyboard and mouse.
         let sharing = shares_input(&self.cfg, &self.attached);
@@ -835,7 +851,7 @@ impl eframe::App for App {
             self.sent_sharing = Some(sharing);
         }
 
-        if self.last_scan.elapsed() >= RESCAN {
+        if self.last_scan.elapsed() >= RESCAN && !store_demo() {
             self.attached = devices::scan();
             self.last_scan = Instant::now();
         }
@@ -925,7 +941,39 @@ pub fn apply_settings(cfg: &Config, attached: &Attached) {
 
 /// Dev builds only: HOMEKVM_DEMO=1 fills the screen layout with sample PCs.
 fn demo_layout() -> bool {
-    cfg!(debug_assertions) && std::env::var_os("HOMEKVM_DEMO").is_some_and(|v| v == "1" || v == "full")
+    cfg!(debug_assertions) && std::env::var_os("HOMEKVM_DEMO").is_some_and(|v| v == "1" || v == "full") || store_demo()
+}
+
+/// Dev builds only: HOMEKVM_DEMO=store shows sample PCs, settings and diagnostics
+/// everywhere, for Microsoft Store screenshots (no real names or addresses);
+/// HOMEKVM_DEMO=store-pair adds a pairing request.
+fn store_demo() -> bool {
+    cfg!(debug_assertions) && std::env::var("HOMEKVM_DEMO").is_ok_and(|v| v.starts_with("store"))
+}
+
+/// The sample network for Store screenshots.
+fn demo_view() -> NetView {
+    let pc = |id: &str, paired: bool, addr: &str| PeerView {
+        id: id.into(),
+        name: id.into(),
+        paired,
+        connected: paired,
+        found: true,
+        shares: false,
+        addr: Some(addr.into()),
+    };
+    NetView {
+        my_id: "7F3A…C21B".into(),
+        peers: vec![pc("CREATORX", true, "192.168.1.24"), pc("Office PC", true, "192.168.1.31"), pc("Media PC", false, "192.168.1.40")],
+        pairing: std::env::var("HOMEKVM_DEMO").is_ok_and(|v| v == "store-pair").then(|| PairingView {
+            id: "Media PC".into(),
+            name: "Media PC".into(),
+            code: "482 913".into(),
+            incoming: true,
+            confirmed: false,
+        }),
+        ..Default::default()
+    }
 }
 
 // ---- Theme ------------------------------------------------------------------------------
@@ -1353,6 +1401,16 @@ fn fit(ui: &Ui, s: &str, max_width: f32, max: f32, font: fn(f32) -> FontId) -> (
 
 /// The Diagnostics lines: health, label and what happened.
 fn diagnostics(view: &NetView) -> Vec<(Health, &'static str, String)> {
+    if store_demo() {
+        return vec![
+            (Health::Ok, "Hooks", "keyboard on · mouse on".into()),
+            (Health::Ok, "Keys", "captured 1,284 · sent 1,284 · received 0 · typed 0".into()),
+            (Health::Ok, "Copy sent", "text 2.1 KB · 3 min ago".into()),
+            (Health::Ok, "Copy got", "image 1920×1080 · just now".into()),
+            (Health::Ok, "Files", "pasted 4 (86.2 MB) · sent 2 (12.4 MB) · 9 min ago".into()),
+            (Health::Ok, "Link", "CREATORX, Office PC · encrypted".into()),
+        ];
+    }
     let (hooks_h, hooks) = crate::input::diag::hooks_row();
     let (keys_h, keys) = crate::input::diag::keys_row();
     let (sent_h, sent) = activity::copy_sent_row();

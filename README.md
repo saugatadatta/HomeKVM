@@ -4,6 +4,8 @@ Use one keyboard and mouse across your home PCs. HomeKVM also shares the clipboa
 can copy files from one PC to another with copy and paste. It's one small Rust app, the same on
 every PC. It runs in the tray without admin rights, and only PCs you pair can connect.
 
+![HomeKVM's window: the screen layout, this PC, other PCs, settings and diagnostics](docs/store/1-screenshot-dark.png)
+
 ## Why HomeKVM
 HomeKVM started out of frustration with PowerToys Mouse Without Borders. It aims at the same
 idea with less to set up and less to go wrong:
@@ -16,6 +18,18 @@ idea with less to set up and less to go wrong:
 
 See [PLAN.md](PLAN.md) for the design and phases.
 
+## Screenshots
+Pairing: both PCs show the same 6-digit code, and you trust it on each.
+
+![A pairing request with its 6-digit code](docs/store/2-screenshot-pairing.png)
+
+The window follows Windows' light or dark setting.
+
+![HomeKVM in the light theme](docs/store/3-screenshot-light.png)
+
+These are the Microsoft Store screenshots, made from a dev build with sample PCs (see
+[STORE.md](STORE.md#store-images)).
+
 ## Status
 - Phase 1: tray icon with a status dot, main window, settings, start at sign-in, and
   detection of the keyboards and mice attached to this PC.
@@ -25,7 +39,7 @@ See [PLAN.md](PLAN.md) for the design and phases.
 - Phase 3: keyboard and mouse sharing. Move the mouse past a screen edge onto the PC placed
   there, along a row of several PCs, and back. Ctrl+Alt+Home (or the tray menu) always brings
   it back; a dropped connection releases everything; using a controlled PC's own mouse takes
-  it back. Not yet tested on real hardware.
+  it back. Tested on two PCs (0.10.1 on).
 - Phase 4: one shared clipboard for text and images (screenshots too), last copy wins, both
   ways. Password-manager copies marked private are never sent.
 - Phase 5: files and folders through the same shared clipboard. Copying
@@ -41,8 +55,9 @@ Next: free code signing (see [SIGNING.md](SIGNING.md)).
 
 ## Download
 Two ways, same app: a single portable `HomeKVM.exe` from GitHub Releases (below), or the
-Microsoft Store (coming; see [STORE.md](STORE.md)). The Store version is updated by the Store;
-the GitHub version updates itself from GitHub Releases.
+[Microsoft Store](https://apps.microsoft.com/detail/9P4H0H9835CN) (submitted; the link works
+once Microsoft approves it, see [STORE.md](STORE.md)). The Store version is updated by the
+Store; the GitHub version updates itself from GitHub Releases.
 
 Get `HomeKVM.exe` from [Releases](https://github.com/saugatadatta/HomeKVM/releases/latest).
 It's a single file: run it on each PC. Every release is built from this repo by GitHub
