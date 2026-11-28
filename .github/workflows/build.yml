@@ -79,12 +79,21 @@ jobs:
           if ($sig.Status -ne 'Valid') { throw "Signature is $($sig.Status)" }
           "Signed by: $($sig.SignerCertificate.Subject)"
 
-      - name: Check the tag matches the app version
+      - name: Check the tag matches the app version and the changelog
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} doesn't match Cargo.toml version $version" }
+          # Every version records its changes in CHANGELOG.md; the release notes show them.
+          $lines = Get-Content CHANGELOG.md
+          $start = [array]::IndexOf($lines, "## [$version]")
+          if ($start -lt 0) { throw "CHANGELOG.md has no section for $version. Add one before tagging." }
+          $end = $start + 1
+          while ($end -lt $lines.Count -and -not $lines[$end].StartsWith("## [")) { $end++ }
+          if ($end -le $start + 1) { throw "The CHANGELOG.md section for $version is empty." }
+          $notes = @("## What's new in $version") + $lines[($start + 1)..($end - 1)] + @("", "---", "") + (Get-Content .github/release-notes.md)
+          $notes | Set-Content release-notes-full.md
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -98,7 +107,7 @@ jobs:
           (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() | Set-Content HomeKVM.exe.sha256 -NoNewline
           gh release create "${{ github.ref_name }}" $exe HomeKVM.exe.sha256 `
             --title "HomeKVM ${{ github.ref_name }}" `
-            --notes-file .github/release-notes.md
+            --notes-file release-notes-full.md
 
       # ---- Microsoft Store (see STORE.md) ----------------------------------------------
       # Every build makes the Store package, so problems show up early. Until the

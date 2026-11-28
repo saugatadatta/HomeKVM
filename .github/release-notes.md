@@ -18,4 +18,4 @@ To start HomeKVM with Windows, turn on **Start when I sign in** in its Settings.
 Windows may ask to allow HomeKVM through the firewall. Allow it on **private** networks so
 your PCs can find each other.
 
-See the [README](https://github.com/saugatadatta/HomeKVM#readme) for what's in this version.
+Every version's changes are in the [changelog](https://github.com/saugatadatta/HomeKVM/blob/main/CHANGELOG.md).

@@ -237,11 +237,13 @@ impl App {
     fn hide_instead_of_close(&self, ctx: &Context) {
         let (close, minimized) =
             ctx.input(|i| (i.viewport().close_requested(), i.viewport().minimized.unwrap_or(false)));
+        // Hidden with a direct Windows call (see win::hide_main_window), so it goes back
+        // to the tray every time, not only the first time.
         if close {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            crate::win::hide_main_window();
         } else if minimized {
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            crate::win::hide_main_window();
         }
     }
 
@@ -685,12 +687,29 @@ impl App {
                 ("Pause at the screen edge", "Wait 0.2 s before switching PCs", &mut c.edge_delay),
             ];
             for (k, (title, detail, on)) in rows.into_iter().enumerate() {
-                if k > 0 {
+                // Start at sign-in is off until turned on: a soft blue panel points it out.
+                let highlight = k == 3;
+                let after_highlight = k == 4;
+                if k > 0 && !highlight && !after_highlight {
                     let w = ui.available_width();
                     let (line, _) = ui.allocate_exact_size(Vec2::new(w, 1.0), Sense::hover());
                     ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0_f32, pal(ui).line));
                 }
-                setting_row(ui, title, detail, on);
+                if highlight {
+                    let p = pal(ui);
+                    Frame::none()
+                        .fill(p.acbg)
+                        .stroke(Stroke::new(1.0_f32, p.acbg2))
+                        .rounding(Rounding::same(10.0))
+                        .inner_margin(Margin::symmetric(10.0, 4.0))
+                        .outer_margin(Margin::symmetric(-10.0, 0.0))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            setting_row_tinted(ui, title, detail, on);
+                        });
+                } else {
+                    setting_row(ui, title, detail, on);
+                }
             }
         });
     }
@@ -802,6 +821,9 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        if crate::win::settle_startup() {
+            ctx.request_repaint();
+        }
         self.hide_instead_of_close(ctx);
         self.view = self.shared.net();
         apply_settings(&self.cfg, &self.attached);
@@ -1074,6 +1096,24 @@ fn setting_row(ui: &mut Ui, title: &str, detail: &str, on: &mut bool) -> bool {
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.label(RichText::new(title).color(p.tx));
             ui.label(RichText::new(detail).size(12.0).color(p.tx2));
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            changed = toggle(ui, on).changed();
+        });
+    });
+    changed
+}
+
+/// Like `setting_row`, for the highlighted row: the quiet line is in the accent's text shade.
+fn setting_row_tinted(ui: &mut Ui, title: &str, detail: &str, on: &mut bool) -> bool {
+    let p = pal(ui);
+    let mut changed = false;
+    let w = ui.available_width();
+    ui.allocate_ui_with_layout(Vec2::new(w, 36.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(RichText::new(title).color(p.tx));
+            ui.label(RichText::new(detail).size(12.0).color(p.act));
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             changed = toggle(ui, on).changed();
